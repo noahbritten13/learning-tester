@@ -1,0 +1,8 @@
+.DS_Store
+.claude/
+# Kept private: stored in the private learning-data repository instead.
+PLAN.md
+# Never publish keys or anything personal.
+Access key*
+*.key
+*secret*

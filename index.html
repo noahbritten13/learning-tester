@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Learning Tester</title>
+  <meta name="description" content="Spaced-repetition flashcards for what you're learning.">
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141517" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Learning">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div id="app"><main class="page center"><p class="muted">Loading…</p></main></div>
+  <nav id="tabs" aria-label="Main">
+    <a href="#/home" data-tab="home"><span class="tab-icon" aria-hidden="true">◎</span>Review</a>
+    <a href="#/cards" data-tab="cards"><span class="tab-icon" aria-hidden="true">▤</span>Cards</a>
+    <a href="#/new" data-tab="new"><span class="tab-icon" aria-hidden="true">＋</span>Write</a>
+    <a href="#/import" data-tab="import"><span class="tab-icon" aria-hidden="true">⇩</span>Import</a>
+    <a href="#/settings" data-tab="settings"><span class="tab-icon" aria-hidden="true">⚙</span>Settings</a>
+  </nav>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
