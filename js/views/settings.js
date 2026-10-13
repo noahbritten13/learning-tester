@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS } from '../scheduler.js';
 import { formatRelative } from '../util.js';
 import { esc, header, go, render, toast, syncPill, downloadOrShare, readFile } from '../ui.js';
 
-export const APP_VERSION = '1.1.0 (phase 1 + sub-themes)';
+export const APP_VERSION = '1.2.0 (language words)';
 const FSRS_VERSION = 'ts-fsrs 5.4.2';
 
 function guessDeviceName() {
@@ -88,9 +88,10 @@ export function settingsView() {
   const tree = store.themeTree();
   const themeRow = (t, sub = false) => `
     <li class="theme-row admin ${sub ? 'sub' : ''}">
-      <div class="theme-name">${esc(t.name)}</div>
+      <div class="theme-name">${esc(t.name)}${!sub && t.language ? ` <span class="chip">Language: ${esc(t.language)}</span>` : ''}</div>
       <div class="row tight">
         ${sub ? '' : `<button type="button" class="link" data-action="addSubTheme" data-id="${t.id}">+ Sub-theme</button>`}
+        ${sub ? '' : `<button type="button" class="link" data-action="setLanguage" data-id="${t.id}">${t.language ? 'Language' : 'Is a language?'}</button>`}
         <button type="button" class="link" data-action="renameTheme" data-id="${t.id}">Rename</button>
         <button type="button" class="link danger" data-action="deleteTheme" data-id="${t.id}">Delete</button>
       </div>
@@ -216,6 +217,14 @@ export function settingsView() {
         const name = prompt(`Name of the new sub-theme of “${parent.name}”`);
         if (!name?.trim()) return;
         await store.addTheme(name, parent.id);
+        render();
+      },
+      async setLanguage(el) {
+        const t = store.themes.get(el.dataset.id);
+        const lang = prompt(`Is “${t.name}” a language you're learning? Type its name (e.g. Spanish), or leave empty if it isn't.\n\nNew cards in a language theme are words, tested both ways.`, t.language ?? t.name);
+        if (lang === null) return;
+        await store.setThemeLanguage(t.id, lang);
+        toast(lang.trim() ? `${t.name} is set as a language: ${lang.trim()}` : `${t.name} is no longer a language theme`);
         render();
       },
       async renameTheme(el) {

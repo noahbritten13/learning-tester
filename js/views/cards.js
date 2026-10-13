@@ -1,5 +1,6 @@
 import { store } from '../store.js';
-import { State } from '../scheduler.js';
+import { State, keysOf } from '../scheduler.js';
+import { inThemes, cardThemes } from '../model.js';
 import { cardHints, cardErrors } from '../rules.js';
 import { formatRelative, formatDate, stripAccentsLower } from '../util.js';
 import { esc, header, go, render, toast, themeOptions, themePicker, pickerHandlers, pickerError, resolvePick } from '../ui.js';
@@ -12,14 +13,21 @@ const moveTo = { theme: '', newTheme: '', newSub: '', subParent: '' };
 
 function dueLabel(card) {
   if (card.status === 'archived') return 'Archived';
-  const st = store.cardState(card.id)?.state;
-  if (!st || st.state === State.New) return 'New';
-  return `Due ${formatRelative(st.due)}`;
+  const started = keysOf(card).map(k => store.cardState(k)?.state).filter(st => st && st.state !== State.New);
+  if (!started.length) return 'New';
+  const due = Math.min(...started.map(st => +new Date(st.due)));
+  return `Due ${formatRelative(due)}${card.type === 'word' && started.length < 2 ? ' · one way so far' : ''}`;
+}
+
+// "Spanish › Verbs" plus any extra sub-themes: "Spanish › Verbs, Irregular".
+function themesLabel(c) {
+  if (!c.also_in.length) return store.themeName(c.theme);
+  return [store.themeName(c.theme), ...c.also_in.filter(id => store.themes.get(id) && !store.themes.get(id).deleted).map(id => store.themes.get(id).name)].join(', ');
 }
 
 function matches(card, q) {
   if (!q) return true;
-  const hay = stripAccentsLower([...card.prompts, card.answer, card.source, ...card.tags, ...card.accept].join(' '));
+  const hay = stripAccentsLower([...card.prompts, card.answer, card.note, card.source, ...card.tags, ...card.accept].join(' '));
   return q.split(/\s+/).every(w => hay.includes(w));
 }
 
@@ -30,17 +38,18 @@ function filtered() {
   return store.liveCards()
     .filter(c => (listState.show === 'archived' ? c.status === 'archived' : c.status !== 'archived'))
     .filter(c => listState.show !== 'unverified' || c.unverified)
-    .filter(c => !scope || scope.has(c.theme))
+    .filter(c => !scope || inThemes(c, [...scope]))
     .filter(c => matches(c, q))
     .sort((a, b) => (a.updated < b.updated ? 1 : -1));
 }
 
 function cardRow(c) {
-  const extra = c.prompts.length > 1 ? ` · ${c.prompts.length} wordings` : '';
+  const extra = c.prompts.length > 1 && c.type !== 'word' ? ` · ${c.prompts.length} wordings` : '';
+  const links = c.type === 'word' ? store.linksOf(c.id).length : 0;
   const body = `
-    <div class="card-q">${esc(c.prompts[0])}</div>
-    <div class="card-a">${esc(c.answer)}</div>
-    <div class="muted small">${esc(store.themeName(c.theme))} · ${esc(dueLabel(c))}${extra}${c.unverified ? ' · <span class="warn-text">Unverified</span>' : ''}${c.author === 'claude' ? ' · Suggested by Claude' : ''}</div>`;
+    <div class="card-q">${esc(c.prompts[0])}${c.type === 'word' ? ` <span class="card-a-inline">= ${esc(c.answer)}</span>` : ''}</div>
+    ${c.type === 'word' ? (c.note ? `<div class="card-a muted">${esc(c.note)}</div>` : '') : `<div class="card-a">${esc(c.answer)}</div>`}
+    <div class="muted small">${esc(themesLabel(c))} · ${esc(dueLabel(c))}${extra}${links ? ` · ${links} linked` : ''}${c.unverified ? ' · <span class="warn-text">Unverified</span>' : ''}${c.author === 'claude' ? ' · Suggested by Claude' : ''}</div>`;
   if (listState.selecting) {
     return `<li><label class="card-row selectable ${selected.has(c.id) ? 'picked' : ''}">
       <input type="checkbox" class="check" data-change="pick" value="${c.id}" ${selected.has(c.id) ? 'checked' : ''} aria-label="Select card">
@@ -69,12 +78,15 @@ function selectionBar() {
   const archivedView = listState.show === 'archived';
   return `<div class="sticky-actions selection-bar">
     <div class="selection-count">${selected.size} selected</div>
-    ${themePicker(moveTo, { label: 'Move to' })}
+    ${themePicker(moveTo, { label: 'Theme or sub-theme' })}
     <div id="move-error"></div>
-    <div class="row">
+    <div class="row wrap">
       <button type="button" class="btn btn-grow" data-action="moveSelected">Move</button>
+      <button type="button" class="btn btn-secondary" data-action="addToSelected">Add to</button>
+      <button type="button" class="btn btn-secondary" data-action="removeFromSelected">Remove from</button>
       <button type="button" class="btn btn-secondary" data-action="${archivedView ? 'restoreSelected' : 'archiveSelected'}">${archivedView ? 'Restore' : 'Archive'}</button>
     </div>
+    <p class="muted small">“Add to” keeps the cards where they are as well.</p>
   </div>`;
 }
 
@@ -105,7 +117,7 @@ export function cardsView(params) {
           </select>
           <div class="segmented">${seg('active', 'Active')}${seg('unverified', 'Unverified')}${seg('archived', `Archived${archivedCount ? ` (${archivedCount})` : ''}`)}</div>
         </div>
-        ${listState.selecting && !selected.size ? '<p class="muted small">Tick cards to move them to another theme or sub-theme, or to archive them.</p>' : ''}
+        ${listState.selecting && !selected.size ? '<p class="muted small">Tick cards to move them, add them to more sub-themes, or archive them.</p>' : ''}
         <div id="card-list">${listHtml()}</div>
         ${selectionBar()}
       </main>`,
@@ -169,10 +181,35 @@ export function cardsView(params) {
         }
         const theme = await resolvePick(moveTo);
         const n = selected.size;
-        await store.updateCards([...selected], { theme });
+        await store.moveCards([...selected], theme);
         Object.assign(moveTo, { theme, newTheme: '', newSub: '' });
         endSelecting();
         toast(`Moved ${n} card${n === 1 ? '' : 's'} to ${store.themeName(theme)}`);
+        render();
+      },
+      async addToSelected() {
+        const err = pickerError(moveTo) ?? (moveTo.theme === '__new' ? 'Add to needs a sub-theme of the cards\' theme.' : null);
+        if (err) {
+          document.getElementById('move-error').innerHTML = `<div class="errors">${esc(err)}</div>`;
+          return;
+        }
+        if (moveTo.theme !== '__newsub' && store.isTopTheme(moveTo.theme)) {
+          document.getElementById('move-error').innerHTML = '<div class="errors">Choose a sub-theme. Cards are already in their whole theme.</div>';
+          return;
+        }
+        const theme = await resolvePick(moveTo);
+        const { added, skipped } = await store.addCardsToTheme([...selected], theme);
+        Object.assign(moveTo, { theme, newTheme: '', newSub: '' });
+        endSelecting();
+        toast(`Added ${added} card${added === 1 ? '' : 's'} to ${store.themeName(theme)}${skipped ? `. ${skipped} skipped: they're in a different theme.` : ''}`);
+        render();
+      },
+      async removeFromSelected() {
+        if (!store.themes.get(moveTo.theme)) return;
+        const theme = moveTo.theme;
+        const { removed, skipped } = await store.removeCardsFromTheme([...selected], theme);
+        endSelecting();
+        toast(`Removed ${removed} card${removed === 1 ? '' : 's'} from ${store.themeName(theme)}${skipped ? `. ${skipped} kept: it's their only sub-theme (use Move instead).` : ''}`);
         render();
       },
       async archiveSelected() {
@@ -205,18 +242,26 @@ export function archiveView() {
 
 let draft = null; // the card being edited, kept across re-renders
 
+const isRealTheme = id => !!store.themes.get(id) && !store.themes.get(id).deleted;
+const defaultType = theme => (isRealTheme(theme) && store.themeLanguage(theme) ? 'word' : 'concept');
+
 function blankDraft(params) {
   const lastTheme = draft?.theme && store.themes.get(draft.theme) ? draft.theme : store.themeTree()[0]?.theme.id ?? '__new';
+  const theme = params.theme ?? lastTheme;
   return {
     id: null,
-    theme: params.theme ?? lastTheme,
+    theme,
     newTheme: '',
     newSub: '',
     subParent: '',
-    type: draft?.id === null ? draft.type : 'concept',
+    also_in: [],
+    type: draft?.id === null ? draft.type : defaultType(theme),
     prompts: [''],
     answer: '',
     accept: '',
+    note: '',
+    links: [], // [{ id, kind }]
+    linkQuery: '',
     source: '',
     unverified: false,
     tags: '',
@@ -230,23 +275,38 @@ function draftFromCard(c) {
     newTheme: '',
     newSub: '',
     subParent: '',
+    also_in: c.also_in.slice(),
     type: c.type,
     prompts: c.prompts.length ? c.prompts.slice() : [''],
     answer: c.answer,
     accept: c.accept.join('\n'),
+    note: c.note,
+    links: store.linksOf(c.id).map(l => ({ id: l.card.id, kind: l.kind })),
+    linkQuery: '',
     source: c.source,
     unverified: c.unverified,
     tags: c.tags.join(', '),
   };
 }
 
+// Sub-themes the card could also belong to: the other sub-themes of its theme.
+function siblingSubThemes(d) {
+  if (!isRealTheme(d.theme)) return [];
+  const top = store.topThemeOf(d.theme);
+  const node = store.themeTree().find(n => n.theme.id === top);
+  return (node?.children ?? []).filter(t => t.id !== d.theme);
+}
+
 function draftToFields(d) {
+  const siblings = new Set(siblingSubThemes(d).map(t => t.id));
   return {
     theme: d.theme,
+    also_in: d.also_in.filter(id => siblings.has(id)),
     type: d.type,
     prompts: d.prompts.map(p => p.trim()).filter(Boolean),
     answer: d.answer,
     accept: d.accept.split('\n').map(s => s.trim()).filter(Boolean),
+    note: d.type === 'word' ? d.note : '',
     source: d.source,
     unverified: d.unverified,
     tags: d.tags.split(',').map(s => s.trim()).filter(Boolean),
@@ -260,14 +320,98 @@ function hintsHtml(d) {
 }
 
 function cardInfo(c) {
-  const st = store.cardState(c.id);
-  const reviews = store.reviewsByCard.get(c.id)?.length ?? 0;
   const parts = [`Created ${formatDate(c.created)}`];
   if (c.author === 'claude') parts.push('suggested by Claude');
+  const reviews = store.reviewCount(c);
   parts.push(reviews ? `reviewed ${reviews} time${reviews === 1 ? '' : 's'}` : 'not reviewed yet');
   if (c.status === 'archived') parts.push('archived');
-  else if (st && st.state.state !== State.New) parts.push(`next review ${formatRelative(st.state.due)}`);
+  else {
+    const lang = store.themeLanguage(c.theme) || 'word';
+    for (const key of keysOf(c)) {
+      const st = store.cardState(key);
+      if (!st || st.state.state === State.New) continue;
+      const label = c.type !== 'word' ? 'next review' : key === c.id ? `next ${lang} → English` : `next English → ${lang}`;
+      parts.push(`${label} ${formatRelative(st.state.due)}`);
+    }
+  }
   return parts.join(' · ');
+}
+
+function alsoInHtml(d) {
+  const sibs = siblingSubThemes(d);
+  if (!sibs.length || store.isTopTheme(d.theme)) return '';
+  return `<fieldset class="also-in"><legend>Also in <span class="muted">(other sub-themes)</span></legend>
+    ${sibs.map(t => `<label class="check-row"><input type="checkbox" data-change="alsoIn" value="${t.id}" ${d.also_in.includes(t.id) ? 'checked' : ''}> ${esc(t.name)}</label>`).join('')}
+  </fieldset>`;
+}
+
+function linkResults(d) {
+  const q = stripAccentsLower(d.linkQuery.trim());
+  if (!q || !isRealTheme(d.theme)) return '';
+  const taken = new Set(d.links.map(l => l.id));
+  const hits = store.wordsInTheme(d.theme)
+    .filter(c => c.id !== d.id && !taken.has(c.id) && stripAccentsLower(`${c.prompts.join(' ')} ${c.answer}`).includes(q))
+    .slice(0, 8);
+  if (!hits.length) return '<p class="muted small">No matching words in this theme.</p>';
+  return `<ul class="link-results">${hits.map(c => `<li>
+    <span><strong>${esc(c.prompts[0])}</strong> = ${esc(c.answer)}</span>
+    <span class="row tight"><button type="button" class="link small" data-action="addLink" data-id="${c.id}" data-kind="opposite">Opposite</button>
+    <button type="button" class="link small" data-action="addLink" data-id="${c.id}" data-kind="related">Related</button></span>
+  </li>`).join('')}</ul>`;
+}
+
+function linksHtml(d) {
+  const rows = d.links.map(l => {
+    const c = store.cards.get(l.id);
+    if (!c) return '';
+    return `<li><span><strong>${esc(c.prompts[0])}</strong> = ${esc(c.answer)} <span class="muted small">(${l.kind})</span></span>
+      <button type="button" class="icon-btn" data-action="removeLink" data-id="${l.id}" aria-label="Unlink ${esc(c.prompts[0])}">✕</button></li>`;
+  }).join('');
+  return `<div class="field-label">Linked words <span class="muted">(opposites and related words, tested after this one if you choose)</span></div>
+    ${rows ? `<ul class="links-list">${rows}</ul>` : ''}
+    <input type="search" data-input="linkQuery" value="${esc(d.linkQuery)}" placeholder="Find a word to link">
+    <div id="link-results">${linkResults(d)}</div>`;
+}
+
+function wordFields(d) {
+  const lang = isRealTheme(d.theme) ? store.themeLanguage(d.theme) || 'Word' : 'Word';
+  return `
+    <label>${esc(lang)}<input data-input="word" value="${esc(d.prompts[0] ?? '')}" placeholder="e.g. esconder" autocapitalize="none" autocorrect="off" spellcheck="false"></label>
+    <label>English<input data-input="answer" value="${esc(d.answer)}" placeholder="e.g. to hide, to conceal" autocapitalize="none"></label>
+    <p class="muted small">Separate meanings with commas; any one counts as right. Words in brackets are shown but don't need typing, e.g. “to be (temporary)”.</p>
+    <label>Note <span class="muted">(grammar, shown after answering; never typed)</span><textarea rows="2" data-input="note" placeholder="e.g. e→ie, irregular 1st person (tengo)">${esc(d.note)}</textarea></label>
+    <label>Other accepted English answers <span class="muted">(one per line)</span><textarea rows="2" data-input="accept">${esc(d.accept)}</textarea></label>
+    ${d.prompts.length > 1 ? `<p class="muted small">Other accepted ${esc(lang)} forms: ${d.prompts.slice(1).map(esc).join(', ')}</p>` : ''}
+    ${linksHtml(d)}`;
+}
+
+function questionFields(d) {
+  const promptFields = d.prompts.map((p, i) => `
+    <div class="prompt-field">
+      <textarea rows="2" data-input="prompt" data-i="${i}" placeholder="${i ? 'Another way of asking the same question' : 'The question'}">${esc(p)}</textarea>
+      ${i ? `<button type="button" class="icon-btn" data-action="removePrompt" data-i="${i}" aria-label="Remove this wording">✕</button>` : ''}
+    </div>`).join('');
+  return `
+    <div class="field-label">Question</div>
+    ${promptFields}
+    <button type="button" class="link" data-action="addPrompt">+ Add another wording</button>
+
+    <label>Answer<textarea name="answer" rows="3" data-input="answer">${esc(d.answer)}</textarea></label>
+    ${d.type === 'exact' ? `<label>Other accepted answers <span class="muted">(one per line)</span><textarea name="accept" rows="2" data-input="accept">${esc(d.accept)}</textarea></label>` : ''}`;
+}
+
+const TYPE_HELP = {
+  concept: 'You type your answer, compare it with this answer, and rate yourself.',
+  exact: 'For short answers like a single word. Your typed answer is checked, forgiving capitals and (unless strict) accents.',
+  word: 'A word in a language, tested both ways (e.g. Spanish → English and English → Spanish), each with its own schedule. Marked automatically.',
+};
+
+// Save the draft's links: add new ones (stored on this card) and remove ones taken away.
+async function saveLinks(id, links) {
+  const before = new Map(store.linksOf(id).map(l => [l.card.id, l.kind]));
+  const after = new Map(links.map(l => [l.id, l.kind]));
+  for (const [other] of before) if (!after.has(other)) await store.unlinkWords(id, other);
+  for (const [other, kind] of after) if (before.get(other) !== kind) await store.linkWords(id, other, kind);
 }
 
 export function cardEditView(params, rest, name) {
@@ -281,31 +425,21 @@ export function cardEditView(params, rest, name) {
   const d = draft;
   const back = params.from === 'review' ? '#/review' : id ? '#/cards' : '#/home';
   const archived = existing?.status === 'archived';
-
-  const promptFields = d.prompts.map((p, i) => `
-    <div class="prompt-field">
-      <textarea rows="2" data-input="prompt" data-i="${i}" placeholder="${i ? 'Another way of asking the same question' : 'The question'}">${esc(p)}</textarea>
-      ${i ? `<button type="button" class="icon-btn" data-action="removePrompt" data-i="${i}" aria-label="Remove this wording">✕</button>` : ''}
-    </div>`).join('');
+  const seg = (value, label) => `<button type="button" class="seg ${d.type === value ? 'on' : ''}" data-action="type" data-value="${value}">${label}</button>`;
 
   const html = `
     ${header(id ? 'Edit card' : 'New card', { back })}
     <main class="page">
       <form class="form" data-submit="save" autocomplete="off">
         ${themePicker(d)}
+        ${alsoInHtml(d)}
 
-        <div class="segmented wide" role="radiogroup" aria-label="How it's marked">
-          <button type="button" class="seg ${d.type === 'concept' ? 'on' : ''}" data-action="type" data-value="concept">I mark myself</button>
-          <button type="button" class="seg ${d.type === 'exact' ? 'on' : ''}" data-action="type" data-value="exact">Marked automatically</button>
+        <div class="segmented wide" role="radiogroup" aria-label="Kind of card">
+          ${seg('concept', 'I mark myself')}${seg('exact', 'Auto-marked')}${seg('word', 'Language word')}
         </div>
-        <p class="muted small">${d.type === 'exact' ? 'For short answers like a single word. Your typed answer is checked, forgiving capitals and (unless strict) accents.' : 'You type your answer, compare it with this answer, and rate yourself.'}</p>
+        <p class="muted small">${TYPE_HELP[d.type]}</p>
 
-        <div class="field-label">Question</div>
-        ${promptFields}
-        <button type="button" class="link" data-action="addPrompt">+ Add another wording</button>
-
-        <label>Answer<textarea name="answer" rows="3" data-input="answer">${esc(d.answer)}</textarea></label>
-        ${d.type === 'exact' ? `<label>Other accepted answers <span class="muted">(one per line)</span><textarea name="accept" rows="2" data-input="accept">${esc(d.accept)}</textarea></label>` : ''}
+        ${d.type === 'word' ? wordFields(d) : questionFields(d)}
 
         <div id="hints">${hintsHtml(d)}</div>
 
@@ -351,21 +485,24 @@ export function cardEditView(params, rest, name) {
     fields.theme = await resolvePick(d);
     if (id) {
       await store.updateCard(id, fields);
+      if (fields.type === 'word') await saveLinks(id, d.links);
       draft = null;
       toast('Saved');
       go(back);
     } else {
-      await store.addCards([{ ...fields, author: 'me' }]);
+      const [card] = await store.addCards([{ ...fields, author: 'me' }]);
+      if (fields.type === 'word' && d.links.length) await saveLinks(card.id, d.links);
       toast('Card saved');
       const keepTheme = fields.theme;
       const keepType = d.type;
-      draft = { ...blankDraft({ theme: keepTheme }), type: keepType };
+      const keepAlso = d.also_in;
+      draft = { ...blankDraft({ theme: keepTheme }), type: keepType, also_in: keepAlso };
       if (another) render();
       else {
         draft = null;
         go('#/cards');
       }
-      if (another) document.querySelector('textarea[data-input="prompt"]')?.focus();
+      if (another) document.querySelector('[data-input="prompt"], [data-input="word"]')?.focus();
     }
   }
 
@@ -375,8 +512,14 @@ export function cardEditView(params, rest, name) {
     hideTabs: params.from === 'review',
     inputs: {
       prompt(el) { d.prompts[Number(el.dataset.i)] = el.value; refreshHints(); },
+      word(el) { d.prompts[0] = el.value; },
       answer(el) { d.answer = el.value; refreshHints(); },
       accept(el) { d.accept = el.value; },
+      note(el) { d.note = el.value; },
+      linkQuery(el) {
+        d.linkQuery = el.value;
+        document.getElementById('link-results').innerHTML = linkResults(d);
+      },
       source(el) { d.source = el.value; },
       tags(el) { d.tags = el.value; },
       ...pickerHandlers(d).inputs,
@@ -384,6 +527,9 @@ export function cardEditView(params, rest, name) {
     changes: {
       ...pickerHandlers(d).changes,
       unverified(el) { d.unverified = el.checked; },
+      alsoIn(el) {
+        d.also_in = el.checked ? [...d.also_in, el.value] : d.also_in.filter(x => x !== el.value);
+      },
     },
     actions: {
       type(el) { d.type = el.dataset.value; render(); },
@@ -394,6 +540,15 @@ export function cardEditView(params, rest, name) {
         all[all.length - 1]?.focus();
       },
       removePrompt(el) { d.prompts.splice(Number(el.dataset.i), 1); render(); },
+      addLink(el) {
+        d.links.push({ id: el.dataset.id, kind: el.dataset.kind });
+        d.linkQuery = '';
+        render();
+      },
+      removeLink(el) {
+        d.links = d.links.filter(l => l.id !== el.dataset.id);
+        render();
+      },
       save() { save(false); },
       saveAnother() { save(true); },
       async archive() {

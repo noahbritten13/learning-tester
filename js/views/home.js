@@ -1,5 +1,6 @@
 import { store } from '../store.js';
-import { buildQueue, isActive, State } from '../scheduler.js';
+import { buildQueue, isActive, State, keysOf } from '../scheduler.js';
+import { inThemes } from '../model.js';
 import { dayStart, formatDuration, formatRelative } from '../util.js';
 import { esc, go, syncPill } from '../ui.js';
 
@@ -39,10 +40,12 @@ function nextDueText() {
   let soonest = null;
   for (const c of store.liveCards()) {
     if (!isActive(c)) continue;
-    const st = store.cardState(c.id)?.state;
-    if (!st || st.state === State.New) continue;
-    const due = new Date(st.due);
-    if (due > new Date() && (!soonest || due < soonest)) soonest = due;
+    for (const key of keysOf(c)) {
+      const st = store.cardState(key)?.state;
+      if (!st || st.state === State.New) continue;
+      const due = new Date(st.due);
+      if (due > new Date() && (!soonest || due < soonest)) soonest = due;
+    }
   }
   return soonest ? `Next review due ${formatRelative(soonest)}.` : '';
 }
@@ -52,7 +55,7 @@ export function homeView() {
   const tree = store.themeTree();
   const all = store.liveCards();
   const active = all.filter(isActive);
-  const queueFor = themeIds => buildQueue({ cards: all, states: store.states, settings: store.settings, themeIds }).counts;
+  const queueFor = themeIds => buildQueue({ cards: all, states: store.states, settings: store.settings, themeIds, dirOf: store.dirOf }).counts;
   const total = queueFor(null);
   const dueNow = total.learning + total.review;
   const anyDue = dueNow + total.new > 0;
@@ -61,8 +64,7 @@ export function homeView() {
   const row = (theme, scope, { sub = false, kids = 0 } = {}) => {
     const q = queueFor(scope);
     const due = q.learning + q.review;
-    const ids = new Set(scope);
-    const count = active.filter(c => ids.has(c.theme)).length;
+    const count = active.filter(c => inThemes(c, scope)).length;
     const meta = [due ? `${due} due` : '', q.new ? `${q.new} new` : ''].filter(Boolean).join(' · ') || (count ? 'Nothing due' : 'No cards yet');
     const control = selecting
       ? `<input type="checkbox" class="check" data-change="pick" value="${theme.id}" ${selected.has(theme.id) ? 'checked' : ''} aria-label="Select ${esc(theme.name)}">`
@@ -77,8 +79,18 @@ export function homeView() {
     </li>`;
   };
 
+  // Which way language words are asked, chosen per language theme.
+  const directionRow = theme => {
+    const mode = store.dirMode(theme.id);
+    const seg = (value, label) => `<button type="button" class="seg ${mode === value ? 'on' : ''}" data-action="dir" data-theme="${theme.id}" data-value="${value}" aria-pressed="${mode === value}">${label}</button>`;
+    const lang = esc(theme.language);
+    return `<li class="direction-row"><div class="segmented small" role="group" aria-label="Direction for ${lang}">
+      ${seg('fwd', `${lang} → English`)}${seg('rev', `English → ${lang}`)}${seg('mixed', 'Mixed')}</div></li>`;
+  };
+
   const themeRows = tree.map(({ theme, children }) => {
     let html = row(theme, store.themeScope(theme.id), { kids: children.length });
+    if (theme.language && !selecting) html += directionRow(theme);
     if (children.length && expanded.has(theme.id)) html += children.map(c => row(c, [c.id], { sub: true })).join('');
     return html;
   }).join('');
@@ -117,6 +129,9 @@ export function homeView() {
     html,
     live: true,
     actions: {
+      dir(el) {
+        store.setDirMode(el.dataset.theme, el.dataset.value);
+      },
       expand(el) {
         const id = el.dataset.id;
         expanded.has(id) ? expanded.delete(id) : expanded.add(id);

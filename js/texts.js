@@ -1,6 +1,6 @@
 // Longer fixed texts.
 
-export const DATA_README = `<!-- learning-tester:data-readme v2 -->
+export const DATA_README = `<!-- learning-tester:data-readme v3 -->
 # Learning Tester data
 
 This private repository holds the data for Learning Tester, a personal
@@ -11,7 +11,7 @@ them yourself, or give them to any AI or tool. Everything is plain text.
 
 | Path | What it holds |
 |---|---|
-| \`themes.json\` | Themes, e.g. "Spanish", and sub-themes, e.g. "Verbs" (a sub-theme has \`parent\`: its theme's id). |
+| \`themes.json\` | Themes, e.g. "Spanish", and sub-themes, e.g. "Verbs" (a sub-theme has \`parent\`: its theme's id). A theme for a language has \`language\`, e.g. "Spanish". |
 | \`settings.json\` | Scheduling settings (desired retention, daily limits, ...). |
 | \`cards/<theme>.json\`, \`cards/<theme>/<sub-theme>.json\` | The cards in each theme and sub-theme. \`cards/_deleted.json\` lists permanently deleted cards so they don't come back from another device. |
 | \`library/<theme>/[<sub-theme>/]<entry>.md\` | Library entries: what you learnt, in your own words, with sources. |
@@ -40,11 +40,26 @@ them yourself, or give them to any AI or tool. Everything is plain text.
 }
 \`\`\`
 
-- \`type\`: \`concept\` (you mark yourself) or \`exact\` (typed answer marked automatically; \`accept\` lists other accepted answers).
+- \`theme\`: the main theme or sub-theme (it decides which file the card is in). \`also_in\`: other sub-themes of the same theme the card also belongs to.
+- \`type\`: \`concept\` (you mark yourself), \`exact\` (typed answer marked automatically; \`accept\` lists other accepted answers) or \`word\` (see below).
 - \`prompts\`: alternative wordings of the same question. They share one schedule.
 - \`builds_on\`: ids of simpler cards this one builds on.
 - \`author\`: \`me\` or \`claude\` (a suggestion you approved).
 - \`status\`: \`active\` or \`archived\` (archived cards are kept but not reviewed).
+
+## A word card (language themes)
+
+\`\`\`json
+{ "type": "word", "prompts": ["tener"], "answer": "to have", "note": "e→ie, irregular 1st person (tengo)",
+  "opposites": [], "related": ["c_4k2j1"], "accept": [], ... }
+\`\`\`
+
+- \`prompts[0]\` is the word; any further entries are other accepted forms.
+- \`answer\` is its meaning(s), separated by commas. Words in brackets are clarifiers: shown, but optional to type.
+- \`note\`: grammar shown after answering, never typed.
+- \`accept\`: other accepted meanings.
+- \`opposites\`, \`related\`: ids of linked words. A link is stored on one card and applies both ways.
+- A word is tested both ways (word → meaning and meaning → word), each with its own schedule.
 
 ## A review (one line in a .jsonl file)
 
@@ -55,10 +70,12 @@ them yourself, or give them to any AI or tool. Everything is plain text.
 - \`rating\`: 1 = Again, 2 = Hard, 3 = Good, 4 = Easy.
 - \`kind\`: \`review\`, or \`followup\` for a related-word check (only a wrong follow-up affects the schedule).
 - \`ms\`: time taken. \`prompt\`: which wording was shown.
+- \`dir\`: \`"rev"\` when a word was asked meaning → word. Missing means word → meaning (or a normal card).
 
 ## Schedules
 
 Schedules are not stored. They are worked out by replaying each card's reviews
 through the FSRS algorithm (the open-source ts-fsrs library, as used by Anki),
 with the settings in \`settings.json\`. Any FSRS implementation can rebuild them.
+A word card has two schedules: one from its reviews without \`dir\`, one from those with \`"dir": "rev"\`.
 `;

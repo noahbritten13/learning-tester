@@ -443,3 +443,37 @@ body.focus-mode #toast { bottom: calc(env(safe-area-inset-bottom) + 16px); }
 .theme-row.admin { flex-wrap: wrap; row-gap: 0; padding-top: 10px; padding-bottom: 8px; }
 .theme-row.admin .theme-name { flex: 1 1 100%; }
 .theme-row.admin .row.tight { flex-wrap: wrap; }
+
+/* ---------- Language words (v1.2) ---------- */
+.prompt.prompt-word { text-align: center; }
+.chip-dir { background: var(--accent-soft); color: var(--accent); }
+.word-line { font-size: 1.05rem; }
+.word-note { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); font-size: 0.92rem; }
+.word-extras { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.word-extras p { margin: 0; }
+.ok-text { color: var(--ok-ink); font-weight: 700; }
+.new-text { color: var(--accent); font-weight: 700; }
+.own-results { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 8px; }
+.own-results li { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; overflow-wrap: anywhere; }
+.own-results .row { margin-top: 4px; }
+.card-a-inline { font-weight: 400; color: var(--muted); }
+.row.wrap .btn { flex: 1 1 auto; }
+.direction-row { padding: 0 14px 12px 50px; }
+@media (max-width: 420px) { .direction-row { padding-left: 14px; } }
+.list > li.direction-row { border-top: 0; }
+.segmented.small { display: grid; grid-template-columns: 1fr 1fr auto; width: 100%; }
+.segmented.small .seg { font-size: 0.78rem; padding: 6px 8px; white-space: normal; line-height: 1.2; }
+fieldset.also-in { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 10px; margin: 12px 0 0; }
+fieldset.also-in legend { font-size: 0.9rem; font-weight: 600; padding: 0 4px; }
+fieldset.also-in .check-row { margin-top: 6px; }
+.links-list, .link-results { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 6px; }
+.links-list li, .link-results li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow-wrap: anywhere; }
+.link-results .row { margin-top: 0; flex-wrap: nowrap; }
+.pending { margin-top: 24px; text-align: left; }
+.pending .list { margin-top: 8px; }
+.pending-item { padding: 12px 14px; }
+.pending-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pending-head .icon-btn { margin-left: auto; }
+.pending-item .form input { margin-top: 6px; }
+.pending-item select { width: auto; }
+.fu-effect { margin: 10px 0 0; }

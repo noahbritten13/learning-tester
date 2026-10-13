@@ -2,6 +2,7 @@ import { store } from '../store.js';
 import { parseImport } from '../importer.js';
 import { cardHints, cardErrors } from '../rules.js';
 import { esc, multiline, header, go, render, toast, readFile, themePicker, pickerHandlers, pickerError, resolvePick } from '../ui.js';
+import { stripAccentsLower } from '../util.js';
 
 // Import state survives re-renders (and leaving the screen and coming back).
 let st = { step: 'paste', text: '', parsed: null, theme: '', newTheme: '', newSub: '', subParent: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
@@ -9,6 +10,24 @@ let st = { step: 'paste', text: '', parsed: null, theme: '', newTheme: '', newSu
 const reset = () => {
   st = { step: 'paste', text: '', parsed: null, theme: st.theme, newTheme: '', newSub: '', subParent: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
 };
+
+// After saving: link imported words to each other and to your existing words, by name.
+// Returns the names that couldn't be found.
+async function linkByName(saved, theme) {
+  const missing = new Set();
+  const key = w => stripAccentsLower(w.trim());
+  const batch = new Map(saved.flatMap(({ card }) => card.prompts.map(p => [key(p), card])));
+  for (const { card, names } of saved) {
+    for (const kind of ['opposite', 'related']) {
+      for (const name of names[kind] ?? []) {
+        const other = batch.get(key(name)) ?? store.findWord(name, theme);
+        if (other && other.id !== card.id) await store.linkWords(card.id, other.id, kind);
+        else if (!other) missing.add(name);
+      }
+    }
+  }
+  return [...missing];
+}
 
 function preview() {
   const parsed = parseImport(st.text);
@@ -55,10 +74,12 @@ function itemHtml(item) {
   const hints = cardHints(c);
   if (item.editing) {
     return `<li class="import-item editing">
-      <label>Question <span class="muted">(one wording per line)</span>
+      <label>${c.type === 'word' ? 'Word' : 'Question'} <span class="muted">(${c.type === 'word' ? 'other accepted forms on further lines' : 'one wording per line'})</span>
         <textarea rows="2" data-input="itemPrompts" data-key="${item.key}">${esc(c.prompts.join('\n'))}</textarea></label>
-      <label>Answer<textarea rows="2" data-input="itemAnswer" data-key="${item.key}">${esc(c.answer)}</textarea></label>
-      <label class="check-row"><input type="checkbox" data-change="itemExact" data-key="${item.key}" ${c.type === 'exact' ? 'checked' : ''}> Marked automatically (short exact answer)</label>
+      <label>${c.type === 'word' ? 'English' : 'Answer'}<textarea rows="2" data-input="itemAnswer" data-key="${item.key}">${esc(c.answer)}</textarea></label>
+      ${c.type === 'word'
+        ? `<label>Note<input data-input="itemNote" data-key="${item.key}" value="${esc(c.note ?? '')}"></label>`
+        : `<label class="check-row"><input type="checkbox" data-change="itemExact" data-key="${item.key}" ${c.type === 'exact' ? 'checked' : ''}> Marked automatically (short exact answer)</label>`}
       <label class="check-row"><input type="checkbox" data-change="itemUnverified" data-key="${item.key}" ${c.unverified ? 'checked' : ''}> Unverified</label>
       <label>Source<input data-input="itemSource" data-key="${item.key}" value="${esc(c.source)}"></label>
       ${errors.length ? `<div class="errors">${errors.map(esc).join('<br>')}</div>` : ''}
@@ -69,9 +90,14 @@ function itemHtml(item) {
   return `<li class="import-item ${item.include ? '' : 'excluded'}">
     <label class="import-check"><input type="checkbox" data-change="include" data-key="${item.key}" ${item.include ? 'checked' : ''} ${errors.length ? 'disabled' : ''} aria-label="Include this card"></label>
     <div class="import-body">
-      ${c.prompts.map((p, i) => `<div class="card-q ${i ? 'alt' : ''}">${i ? '<span class="muted small">or: </span>' : ''}${multiline(p)}</div>`).join('')}
-      <div class="card-a">${multiline(c.answer)}</div>
-      <div class="muted small">${[c.type === 'exact' ? 'Marked automatically' : '', c.source ? `Source: ${esc(c.source)}` : '', c.unverified ? '<span class="warn-text">Unverified</span>' : ''].filter(Boolean).join(' · ')}</div>
+      ${c.type === 'word'
+        ? `<div class="card-q">${esc(c.prompts[0] ?? '')} <span class="card-a-inline">= ${esc(c.answer)}</span></div>
+           ${c.note ? `<div class="card-a muted">${esc(c.note)}</div>` : ''}
+           ${c.linkNames?.opposite.length ? `<div class="muted small">Opposite: ${c.linkNames.opposite.map(esc).join(', ')}</div>` : ''}
+           ${c.linkNames?.related.length ? `<div class="muted small">Related: ${c.linkNames.related.map(esc).join(', ')}</div>` : ''}`
+        : `${c.prompts.map((p, i) => `<div class="card-q ${i ? 'alt' : ''}">${i ? '<span class="muted small">or: </span>' : ''}${multiline(p)}</div>`).join('')}
+      <div class="card-a">${multiline(c.answer)}</div>`}
+      <div class="muted small">${[c.type === 'exact' ? 'Marked automatically' : c.type === 'word' ? 'Language word, tested both ways' : '', c.source ? `Source: ${esc(c.source)}` : '', c.unverified ? '<span class="warn-text">Unverified</span>' : ''].filter(Boolean).join(' · ')}</div>
       ${hints.length ? `<ul class="hint-list">${hints.map(h => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
       <button type="button" class="link small" data-action="edit" data-key="${item.key}">Edit</button>
     </div>
@@ -88,10 +114,10 @@ function pasteHtml() {
 Q: In plain words, what does an API let one program do?
 A: Ask another program for data or actions, following agreed rules.
 
-Q: Spanish for 'tree'?
-A: árbol
-Type: exact</pre>
-      <p class="muted small">Several Q: lines before one A: are alternative wordings of the same card. <a href="#/coach">Instructions for Claude</a></p>
+Theme: Spanish / Verbs
+esconder = to hide; opposite: encontrar
+tener = to have; note: e→ie, irregular 1st person</pre>
+      <p class="muted small">Several Q: lines before one A: are alternative wordings of the same card. Lines like <code>word = meaning</code> make language words, tested both ways. <a href="#/coach">Instructions for Claude</a></p>
       <textarea class="paste" rows="10" data-input="text" placeholder="Paste here">${esc(st.text)}</textarea>
       ${err ? `<div class="errors">${esc(err)}</div>` : ''}
       <div class="row">
@@ -128,6 +154,7 @@ function previewHtml() {
     <main class="page">
       ${warnings.map(w => `<p class="notice">${esc(w)}</p>`).join('')}
       ${themePicker(st)}
+      ${st.parsed.extraSubs?.length ? `<p class="muted small">Also added to: ${st.parsed.extraSubs.map(esc).join(', ')}</p>` : ''}
 
       ${st.entry ? `<section class="entry-preview">
         <label class="check-row"><input type="checkbox" data-change="keepEntry" ${st.keepEntry ? 'checked' : ''}> Save this library entry</label>
@@ -160,6 +187,7 @@ function savedHtml() {
     <main class="page center">
       <p class="big-number">${s.count}</p>
       <p>card${s.count === 1 ? '' : 's'} saved to <strong>${esc(s.themeName)}</strong>${s.entry ? `, with the entry “${esc(s.entry)}”` : ''}.</p>
+      ${s.missing?.length ? `<p class="notice">Not linked, because they aren't in your cards yet: ${s.missing.map(esc).join(', ')}.</p>` : ''}
       <div class="row center-row">
         <a class="btn" href="#/review?start=${s.theme}">Review them now</a>
         <button type="button" class="btn btn-secondary" data-action="again">Import more</button>
@@ -187,6 +215,7 @@ export function importView(params) {
       itemPrompts(el) { find(el).card.prompts = el.value.split('\n').map(s => s.trim()).filter(Boolean); },
       itemAnswer(el) { find(el).card.answer = el.value; },
       itemSource(el) { find(el).card.source = el.value; },
+      itemNote(el) { find(el).card.note = el.value; },
     },
     changes: {
       async file(el) {
@@ -248,10 +277,19 @@ export function importView(params) {
         const themeError = pickerError(st);
         if (themeError) return toast(themeError);
         const theme = await resolvePick(st);
+        // Extra sub-themes the import names (only when the cards go into a sub-theme).
+        const also = [];
+        if (!store.isTopTheme(theme)) {
+          for (const name of st.parsed.extraSubs ?? []) also.push((await store.addTheme(name, store.topThemeOf(theme))).id);
+        }
         let entry = null;
         if (st.entry && st.keepEntry) entry = await store.addEntry({ ...st.entry, theme });
-        await store.addCards(items.map(i => ({ ...i.card, theme, entry: entry?.id ?? null })));
-        st.saved = { count: items.length, theme, themeName: store.themeName(theme), entry: entry?.title };
+        const cards = await store.addCards(items.map(i => {
+          const { linkNames, ...fields } = i.card;
+          return { ...fields, theme, also_in: also, entry: entry?.id ?? null };
+        }));
+        const missing = await linkByName(cards.map((card, n) => ({ card, names: items[n].card.linkNames ?? {} })), theme);
+        st.saved = { count: items.length, theme, themeName: store.themeName(theme), entry: entry?.title, missing };
         st.step = 'saved';
         st.text = '';
         render();

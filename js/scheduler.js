@@ -4,6 +4,7 @@
 
 import { fsrs, generatorParameters, createEmptyCard, Rating, State } from '../vendor/ts-fsrs.mjs';
 import { dayStart, nextDayStart, shuffle, interleave } from './util.js';
+import { inThemes } from './model.js';
 
 export { Rating, State };
 
@@ -40,6 +41,15 @@ export function affectsSchedule(review) {
   return true;
 }
 
+// Word cards have two schedules, one per direction. A schedule is identified
+// by a key: the card id for word → meaning (and every other card), and
+// "<id>@r" for meaning → word. Reviews say which with `dir: "rev"`.
+const REV = '@r';
+export const schedKey = (id, dir) => (dir === 'rev' ? id + REV : id);
+export const parseKey = key => (key.endsWith(REV) ? { id: key.slice(0, -REV.length), dir: 'rev' } : { id: key, dir: 'fwd' });
+export const reviewKey = r => schedKey(r.card, r.dir);
+export const keysOf = card => (card.type === 'word' ? [card.id, card.id + REV] : [card.id]);
+
 export function sortReviews(list) {
   return list.slice().sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.id < b.id ? -1 : 1));
 }
@@ -51,8 +61,10 @@ export function replayCard(card, reviews, f, since = null) {
   let firstReviewTs = null;
   let reviewCardsSince = 0; // reviews of already-learnt cards since `since`
   let shownCount = 0;
+  let lastTs = null; // the latest normal review (not follow-ups)
   for (const r of sortReviews(reviews)) {
     shownCount++;
+    if (r.kind !== 'followup') lastTs = r.ts;
     if (!affectsSchedule(r)) continue;
     const when = new Date(r.ts);
     if (since && when >= since && state.state === State.Review) reviewCardsSince++;
@@ -63,63 +75,97 @@ export function replayCard(card, reviews, f, since = null) {
       // A malformed entry shouldn't break the whole card; skip it.
     }
   }
-  return { state, firstReviewTs, reviewCardsSince, shownCount };
+  return { state, firstReviewTs, reviewCardsSince, shownCount, lastTs };
 }
 
-export function computeStates(cards, reviewsByCard, f, now = new Date()) {
+// reviewsByKey: Map of schedule key -> reviews. Returns Map of schedule key -> state.
+export function computeStates(cards, reviewsByKey, f, now = new Date()) {
   const since = dayStart(now);
   const states = new Map();
   for (const card of cards) {
-    states.set(card.id, replayCard(card, reviewsByCard.get(card.id) ?? [], f, since));
+    for (const key of keysOf(card)) states.set(key, replayCard(card, reviewsByKey.get(key) ?? [], f, since));
   }
   return states;
 }
 
 export const isActive = c => !c.deleted && c.status !== 'archived';
 
-// Counts and the ordered list of cards to show in a session.
+// Counts and the ordered list of schedule keys to show in a session.
 // themeIds: null for everything, or an array of theme ids.
-export function buildQueue({ cards, states, settings, themeIds = null, now = new Date() }) {
+// dirOf(card): for word cards, 'fwd' (word → meaning), 'rev' (meaning → word)
+// or 'mixed' (the default). In mixed mode a word is only asked one way per
+// day: if both directions are due, one is picked and the other waits.
+export function buildQueue({ cards, states, settings, themeIds = null, now = new Date(), dirOf = () => 'mixed' }) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
   const since = dayStart(now);
+  const sinceIso = since.toISOString();
 
   // Daily limits are shared across themes, like a single Anki collection.
   let newToday = 0, reviewsToday = 0;
   for (const c of cards) {
-    const st = states.get(c.id);
-    if (!st) continue;
-    if (st.firstReviewTs && new Date(st.firstReviewTs) >= since) newToday++;
-    reviewsToday += st.reviewCardsSince;
+    for (const key of keysOf(c)) {
+      const st = states.get(key);
+      if (!st) continue;
+      if (st.firstReviewTs && new Date(st.firstReviewTs) >= since) newToday++;
+      reviewsToday += st.reviewCardsSince;
+    }
   }
 
-  const inScope = cards.filter(c => isActive(c) && (!themeIds || themeIds.includes(c.theme)));
+  // Where a schedule stands now: learning (due), waiting (learning, back soon), review (due), fresh, or null.
+  const where = st => {
+    if (!st) return null;
+    const due = new Date(st.due);
+    if (st.state === State.New) return 'fresh';
+    if (st.state === State.Review) return due <= now ? 'review' : null;
+    if (due <= now) return 'learning';
+    return due - now <= LEARN_AHEAD_MS ? 'waiting' : null;
+  };
+  const rank = { learning: 0, waiting: 1, review: 2, fresh: 3 };
+  const reviewedToday = key => (states.get(key)?.lastTs ?? '') >= sinceIso;
+
+  const inScope = cards.filter(c => isActive(c) && (!themeIds || inThemes(c, themeIds)));
   const learning = [], waiting = [], review = [], fresh = [];
   for (const c of inScope) {
-    const st = states.get(c.id)?.state;
-    if (!st) continue;
-    const due = new Date(st.due);
-    if (st.state === State.New) fresh.push(c);
-    else if (st.state === State.Review) { if (due <= now) review.push(c); }
-    else if (due <= now) learning.push(c);
-    // Cards still being learnt that come back within a few minutes count as due,
-    // but wait their turn in the session.
-    else if (due - now <= LEARN_AHEAD_MS) waiting.push({ id: c.id, due });
+    let keys = [c.id];
+    if (c.type === 'word') {
+      const [fwd, rev] = keysOf(c);
+      const mode = dirOf(c);
+      if (mode === 'fwd') keys = [fwd];
+      else if (mode === 'rev') keys = [rev];
+      else {
+        // Mixed: skip a direction if the other was asked today and this one wasn't.
+        keys = [fwd, rev].filter(k => !(reviewedToday(k === fwd ? rev : fwd) && !reviewedToday(k)));
+        const placed = keys.map(k => ({ k, w: where(states.get(k)?.state) })).filter(x => x.w);
+        if (placed.length > 1) {
+          placed.sort((a, b) => rank[a.w] - rank[b.w] || Math.random() - 0.5);
+          keys = [placed[0].k];
+        }
+      }
+    }
+    for (const key of keys) {
+      const st = states.get(key)?.state;
+      const w = where(st);
+      if (w === 'fresh') fresh.push({ key, c });
+      else if (w === 'review') review.push({ key, c, due: new Date(st.due) });
+      else if (w === 'learning') learning.push({ key, c });
+      // Cards still being learnt that come back within a few minutes count as due,
+      // but wait their turn in the session.
+      else if (w === 'waiting') waiting.push({ id: key, due: new Date(st.due) });
+    }
   }
 
   const reviewRoom = Math.max(0, s.maxReviewsPerDay - reviewsToday);
   const newRoom = Math.max(0, s.newPerDay - newToday);
-  const dueReviews = review
-    .sort((a, b) => new Date(states.get(a.id).state.due) - new Date(states.get(b.id).state.due))
-    .slice(0, reviewRoom);
+  const dueReviews = review.sort((a, b) => a.due - b.due).slice(0, reviewRoom);
   const newCards = fresh
-    .sort((a, b) => (a.created < b.created ? -1 : a.created > b.created ? 1 : 0))
+    .sort((a, b) => (a.c.created < b.c.created ? -1 : a.c.created > b.c.created ? 1 : a.key < b.key ? -1 : 1))
     .slice(0, newRoom);
 
   // Mixed order: learning cards first (they're time-sensitive), then
   // reviews shuffled across themes with new cards spread among them.
   const order = [...shuffle(learning), ...interleave(shuffle(dueReviews), newCards)];
   return {
-    ids: order.map(c => c.id),
+    ids: order.map(x => x.key),
     later: waiting,
     counts: { learning: learning.length + waiting.length, review: dueReviews.length, new: newCards.length },
     totals: { reviewsToday, newToday, reviewWaiting: review.length, newWaiting: fresh.length },
@@ -128,11 +174,11 @@ export function buildQueue({ cards, states, settings, themeIds = null, now = new
 
 // Due counts for the home screen: what "Review all" would show, and what
 // reviewing each theme on its own would show (daily limits still apply).
-export function dueByTheme({ cards, states, settings, now = new Date() }) {
-  const all = buildQueue({ cards, states, settings, now });
+export function dueByTheme({ cards, states, settings, now = new Date(), dirOf }) {
+  const all = buildQueue({ cards, states, settings, now, dirOf });
   const out = new Map();
-  for (const theme of new Set(cards.map(c => c.theme))) {
-    const q = buildQueue({ cards, states, settings, themeIds: [theme], now });
+  for (const theme of new Set(cards.flatMap(c => [c.theme, ...(c.also_in ?? [])]))) {
+    const q = buildQueue({ cards, states, settings, themeIds: [theme], now, dirOf });
     out.set(theme, { due: q.counts.learning + q.counts.review, new: q.counts.new });
   }
   return { byTheme: out, total: all.counts };
@@ -185,6 +231,15 @@ export class Session {
     this.take(id);
     this.done++;
     this.lastId = id;
+    const due = new Date(newState.due);
+    if (newState.state !== State.Review && due < this.dayEnd) this.later.push({ id, due });
+  }
+
+  // A card got wrong outside its normal turn (a linked-word check): if it's
+  // now being relearnt, bring it back later in this session.
+  relearn(id, newState) {
+    if (this.queue.includes(id)) return;
+    this.later = this.later.filter(x => x.id !== id);
     const due = new Date(newState.due);
     if (newState.state !== State.Review && due < this.dayEnd) this.later.push({ id, due });
   }

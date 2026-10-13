@@ -17,6 +17,7 @@ function looksLikeList(answer) {
 
 export function cardHints(card) {
   const hints = [];
+  if (card.type === 'word') return hints; // a word and its meanings: the rules below are for questions
   const prompts = (card.prompts ?? []).map(p => String(p ?? '').trim()).filter(Boolean);
   const answer = String(card.answer ?? '').trim();
 
@@ -49,6 +50,11 @@ export function cardHints(card) {
 // Problems that do stop a card being saved.
 export function cardErrors(card) {
   const errors = [];
+  if (card.type === 'word') {
+    if (!String(card.prompts?.[0] ?? '').trim()) errors.push('A word card needs the word.');
+    if (!String(card.answer ?? '').trim()) errors.push('A word card needs its English meaning.');
+    return errors;
+  }
   if (!(card.prompts ?? []).some(p => String(p ?? '').trim())) errors.push('A card needs a question.');
   if (!String(card.answer ?? '').trim()) errors.push('A card needs an answer.');
   return errors;

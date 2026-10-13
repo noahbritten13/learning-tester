@@ -1,13 +1,14 @@
 // Automated tests for the parts that decide marks, schedules and sync.
 // Open tests/index.html in a browser (served from a local web server).
 
-import { checkAnswer } from '../js/match.js';
+import { checkAnswer, checkMeaning, splitMeanings, meaningKey } from '../js/match.js';
 import { cardHints, cardErrors } from '../js/rules.js';
 import { parseImport } from '../js/importer.js';
 import {
   makeScheduler, replayCard, computeStates, buildQueue, Session, promptIndex, previewRatings, Rating, State, DEFAULT_SETTINGS,
+  schedKey, parseKey, reviewKey, keysOf,
 } from '../js/scheduler.js';
-import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone, themeTree, themeAndChildren, themeLabel, themePaths } from '../js/model.js';
+import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone, themeTree, themeAndChildren, themeLabel, themePaths, inThemes, themeLanguage } from '../js/model.js';
 import { runSync, diffFiles, GitHubClient } from '../js/sync.js';
 import { gitBlobSha, utf8ToBase64, base64ToUtf8, dayStart, interleave } from '../js/util.js';
 
@@ -535,6 +536,180 @@ describe('Sub-themes', () => {
     eq([t.themeName, t.subthemeName, t.cards.length], ['Spanish', 'Verbs', 1]);
     eq(parseImport('Theme: Spanish > Verbs\nQ: a\nA: b').subthemeName, 'Verbs');
     eq(parseImport('{"theme":"AI/ML","cards":[{"q":"a","a":"b"}]}').themeName, 'AI/ML');
+  });
+});
+
+describe('Language words', () => {
+  const meanings = a => splitMeanings(a);
+  test('meanings split at commas, but not inside brackets', () => {
+    eq(meanings('to take, to select, to get (understand, grasp)'), ['to take', 'to select', 'to get (understand, grasp)']);
+    eq(meanings('to win; to earn (payment)'), ['to win', 'to earn (payment)']);
+  });
+  test('any one meaning counts, with or without "to" and the bracketed clarifier', () => {
+    const m = meanings('to pass, to happen');
+    eq(checkMeaning('to happen', m).result, 'correct');
+    eq(checkMeaning('pass', m).result, 'correct');
+    eq(checkMeaning('To Pass ', m).result, 'correct');
+    const be = meanings('to be (temporary)');
+    eq(checkMeaning('to be', be).result, 'correct');
+    eq(checkMeaning('to be temporary', be).result, 'correct');
+    eq(checkMeaning('to be (temporary)', be).result, 'correct');
+  });
+  test('typing several meanings is right if each one is', () => {
+    const m = meanings('to pass, to happen');
+    eq(checkMeaning('to pass, to happen', m).result, 'correct');
+    eq(checkMeaning('to pass or to happen', m).result, 'correct');
+    eq(checkMeaning('to pass, to eat', m).result, 'wrong');
+  });
+  test('wrong and blank answers', () => {
+    eq(checkMeaning('to eat', meanings('to drink')).result, 'wrong');
+    eq(checkMeaning('', meanings('to drink')).result, 'blank');
+  });
+  test('extra accepted answers count', () => {
+    eq(checkMeaning('to conceal', [...meanings('to hide'), 'to conceal']).result, 'correct');
+  });
+  test('shared meanings: clarifiers keep ser and estar apart; tirar and echar match', () => {
+    ok(meaningKey('to be (temporary)') !== meaningKey('to be (permanent)'));
+    eq(meaningKey('to throw'), meaningKey('To throw'));
+    eq(meaningKey('throw'), meaningKey('to throw'));
+  });
+  test('schedule keys for the two directions', () => {
+    eq(schedKey('c1', 'fwd'), 'c1');
+    eq(parseKey(schedKey('c1', 'rev')), { id: 'c1', dir: 'rev' });
+    eq(reviewKey({ card: 'c1', dir: 'rev' }), schedKey('c1', 'rev'));
+    eq(reviewKey({ card: 'c1' }), 'c1');
+    eq(keysOf({ id: 'c1', type: 'word' }).length, 2);
+    eq(keysOf({ id: 'c1', type: 'concept' }).length, 1);
+  });
+  test('word cards keep their fields through files', () => {
+    const c = newCard({ theme: 't1', type: 'word', prompts: ['tener'], answer: 'to have', note: 'e→ie', related: ['c9'], also_in: ['t2', 't1'] }, { id: 'c1', now: 'n' });
+    eq([c.type, c.note, c.related, c.also_in], ['word', 'e→ie', ['c9'], ['t2']]);
+    const d = makeData();
+    d.cards.set('c1', c);
+    eq(fromFiles(toFiles(d)).cards.find(x => x.id === 'c1'), c);
+  });
+  test('a copy stripped by an older app version never beats the full copy', () => {
+    const full = cleanCard({ id: 'c1', theme: 't1', type: 'word', prompts: ['tener'], answer: 'to have', note: 'e→ie', updated: 'u1', created: 'c' });
+    const stripped = { id: 'c1', theme: 't1', type: 'concept', prompts: ['tener'], answer: 'to have', updated: 'u1', created: 'c' };
+    const a = new Map([['c1', full]]);
+    mergeInto(a, [stripped]);
+    eq(a.get('c1').type, 'word');
+    const b = new Map([['c1', stripped]]);
+    mergeInto(b, [full]);
+    eq(b.get('c1').note, 'e→ie');
+  });
+  test('cards made before this version get empty new fields', () => {
+    const old = cleanCard({ id: 'c1', theme: 't1', type: 'concept', prompts: ['q'], answer: 'a' });
+    eq([old.also_in, old.note, old.opposites, old.related], [[], '', [], []]);
+  });
+  test('a theme\'s language comes from its top theme', () => {
+    const t = new Map([['es', { id: 'es', name: 'Spanish', language: 'Spanish' }], ['v', { id: 'v', name: 'Verbs', parent: 'es' }]]);
+    eq(themeLanguage(t, 'v'), 'Spanish');
+    eq(themeLanguage(t, 'missing'), '');
+  });
+});
+
+describe('Reviewing words both ways', () => {
+  const f = makeScheduler(DEFAULT_SETTINGS);
+  const now = new Date('2026-10-20T10:00:00');
+  const words = n => Array.from({ length: n }, (_, i) => card(`w${i}`, { type: 'word', prompts: [`w${i}`], answer: `m${i}`, created: new Date(T0.getTime() + i * 1000).toISOString() }));
+  test('each direction has its own schedule; old reviews count as word → meaning', () => {
+    const cards = words(1);
+    const byKey = new Map([['w0', [rev('w0', 0, 3), rev('w0', 10, 3)]]]);
+    const states = computeStates(cards, byKey, f, now);
+    eq(states.get('w0').state.state, State.Review);
+    eq(states.get(schedKey('w0', 'rev')).state.state, State.New);
+  });
+  test('one direction only', () => {
+    const cards = words(3);
+    const states = computeStates(cards, new Map(), f, now);
+    eq(buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now, dirOf: () => 'fwd' }).ids.sort(), ['w0', 'w1', 'w2']);
+    eq(buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now, dirOf: () => 'rev' }).ids.map(k => parseKey(k).dir), ['rev', 'rev', 'rev']);
+  });
+  test('mixed: never both directions of a word in one session', () => {
+    const cards = words(10);
+    const states = computeStates(cards, new Map(), f, now);
+    const q = buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now, dirOf: () => 'mixed' });
+    eq(q.ids.length, 10);
+    eq(new Set(q.ids.map(k => parseKey(k).id)).size, 10);
+  });
+  test('mixed: once a word was asked one way today, the other way waits until tomorrow', () => {
+    const cards = words(1);
+    const today = new Date(dayStart(now).getTime() + 3600000).toISOString();
+    const byKey = new Map([['w0', [{ id: 'r1', card: 'w0', ts: today, rating: 3, kind: 'review' }]]]);
+    // Word → meaning was asked an hour into today; meaning → word is still new.
+    const states = computeStates(cards, byKey, f, now);
+    const q = buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now, dirOf: () => 'mixed' });
+    ok(!q.ids.includes(schedKey('w0', 'rev')), q.ids.join(','));
+    // Choosing English → Spanish explicitly still shows it.
+    ok(buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now, dirOf: () => 'rev' }).ids.includes(schedKey('w0', 'rev')));
+  });
+  test('mixed: a direction already due beats a new one', () => {
+    const cards = words(1);
+    const byKey = new Map([['w0', [rev('w0', 0, 3), rev('w0', 10, 3)]]]);
+    const states = computeStates(cards, byKey, f, now);
+    const due = new Date(new Date(states.get('w0').state.due).getTime() + 1000);
+    const q = buildQueue({ cards, states, settings: DEFAULT_SETTINGS, now: due, dirOf: () => 'mixed' });
+    eq(q.ids, ['w0']);
+  });
+  test('a wrong linked-word check brings that word back later in the session', () => {
+    const s = new Session(['a'], { now: new Date('2026-10-20T10:00:00') });
+    s.relearn('b@r', { state: State.Relearning, due: new Date('2026-10-20T10:10:00') });
+    eq(s.later.map(x => x.id), ['b@r']);
+    s.relearn('a', { state: State.Relearning, due: new Date('2026-10-20T10:10:00') });
+    eq(s.later.length, 1, 'already queued, so left alone');
+  });
+});
+
+describe('Cards in several sub-themes', () => {
+  const f = makeScheduler(DEFAULT_SETTINGS);
+  const now = new Date('2026-10-20T10:00:00');
+  test('a card counts in its main and extra sub-themes, once', () => {
+    const c = card('c1', { theme: 'verbs', also_in: ['irregular'] });
+    ok(inThemes(c, ['irregular']) && inThemes(c, ['verbs']) && !inThemes(c, ['food']));
+    const states = computeStates([c], new Map(), f, now);
+    eq(buildQueue({ cards: [c], states, settings: DEFAULT_SETTINGS, themeIds: ['irregular'], now }).ids, ['c1']);
+    eq(buildQueue({ cards: [c], states, settings: DEFAULT_SETTINGS, themeIds: ['verbs', 'irregular'], now }).ids, ['c1']);
+  });
+  test('the file is chosen by the main sub-theme only', () => {
+    const d = makeData();
+    d.themes = new Map([
+      ['es', { id: 'es', name: 'Spanish', created: 'a', updated: 'a' }],
+      ['verbs', { id: 'verbs', name: 'Verbs', parent: 'es', created: 'b', updated: 'b' }],
+      ['irr', { id: 'irr', name: 'Irregular', parent: 'es', created: 'c', updated: 'c' }],
+    ]);
+    d.cards.set('c1', card('c1', { theme: 'verbs', also_in: ['irr'] }));
+    const files = toFiles(d);
+    ok(files.has('cards/spanish/verbs.json') && !files.has('cards/spanish/irregular.json'), [...files.keys()].join(', '));
+  });
+});
+
+describe('Importing words', () => {
+  test('word lines with notes and links', () => {
+    const r = parseImport('Theme: Spanish / Verbs, Irregular\nesconder = to hide; opposite: encontrar, mostrar\ntener = to have; note: e→ie, irregular 1st person: tengo; related: tener que');
+    eq([r.themeName, r.subthemeName, r.extraSubs], ['Spanish', 'Verbs', ['Irregular']]);
+    eq(r.cards.length, 2);
+    eq([r.cards[0].type, r.cards[0].prompts, r.cards[0].answer], ['word', ['esconder'], 'to hide']);
+    eq(r.cards[0].linkNames.opposite, ['encontrar', 'mostrar']);
+    eq(r.cards[1].note, 'e→ie, irregular 1st person: tengo');
+    eq(r.cards[1].linkNames.related, ['tener que']);
+  });
+  test('a meaning with commas and brackets stays whole', () => {
+    const r = parseImport('coger = to take, to get (understand); note: g→j');
+    eq([r.cards[0].answer, r.cards[0].note], ['to take, to get (understand)', 'g→j']);
+  });
+  test('JSON word cards and a list of sub-themes', () => {
+    const r = parseImport('{"theme":"Spanish","subtheme":["Verbs","Irregular"],"cards":[{"type":"word","word":"ir","meaning":"to go","note":"irregular","opposites":["venir"]}]}');
+    eq([r.subthemeName, r.extraSubs], ['Verbs', ['Irregular']]);
+    eq([r.cards[0].type, r.cards[0].prompts, r.cards[0].answer, r.cards[0].note, r.cards[0].linkNames.opposite], ['word', ['ir'], 'to go', 'irregular', ['venir']]);
+  });
+  test('Q/A cards are unaffected by "=" inside an answer', () => {
+    const r = parseImport('Q: What is 2+2?\nA: 2 + 2 = 4');
+    eq([r.cards.length, r.cards[0].type, r.cards[0].answer], [1, 'concept', '2 + 2 = 4']);
+  });
+  test('word card hints and errors', () => {
+    eq(cardHints({ type: 'word', prompts: ['llevar'], answer: 'to take, to carry, to wear' }), []);
+    eq(cardErrors({ type: 'word', prompts: [''], answer: 'x' }).length, 1);
   });
 });
 

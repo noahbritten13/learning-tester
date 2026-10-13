@@ -12,10 +12,14 @@ export function newCard(fields, { id, now }) {
     id,
     theme: fields.theme,
     entry: fields.entry ?? null,
-    type: fields.type === 'exact' ? 'exact' : 'concept',
+    also_in: fields.also_in ?? [],
+    type: fields.type,
     prompts: fields.prompts,
     answer: fields.answer,
     accept: fields.accept ?? [],
+    note: fields.note ?? '',
+    opposites: fields.opposites ?? [],
+    related: fields.related ?? [],
     builds_on: fields.builds_on ?? [],
     author: fields.author === 'claude' ? 'claude' : 'me',
     source: fields.source ?? '',
@@ -28,17 +32,30 @@ export function newCard(fields, { id, now }) {
 }
 
 const trimList = v => (Array.isArray(v) ? v : []).map(x => String(x ?? '').trim()).filter(Boolean);
+const uniq = list => [...new Set(list)];
+
+// Card types: 'concept' (you mark yourself), 'exact' (typed answer marked
+// automatically) and 'word' (a word in a language theme, tested both ways:
+// prompts[0] is the word, answer its meaning(s), note grammar shown after answering).
+export const CARD_TYPES = ['concept', 'exact', 'word'];
+const cardType = t => (CARD_TYPES.includes(t) ? t : 'concept');
 
 export function cleanCard(c) {
   if (c.deleted) return { id: c.id, deleted: true, created: c.created, updated: c.updated };
   return {
     id: c.id,
     theme: c.theme ?? null,
+    // Other sub-themes (of the same theme) the card also belongs to.
+    also_in: uniq(trimList(c.also_in)).filter(id => id !== c.theme),
     entry: c.entry ?? null,
-    type: c.type === 'exact' ? 'exact' : 'concept',
+    type: cardType(c.type),
     prompts: trimList(c.prompts),
     answer: String(c.answer ?? '').trim(),
     accept: trimList(c.accept),
+    note: String(c.note ?? '').trim(),
+    // Linked words (card ids). A link is stored on one card and shown on both.
+    opposites: uniq(trimList(c.opposites)).filter(id => id !== c.id),
+    related: uniq(trimList(c.related)).filter(id => id !== c.id),
     builds_on: trimList(c.builds_on),
     author: c.author === 'claude' ? 'claude' : 'me',
     source: String(c.source ?? '').trim(),
@@ -54,11 +71,15 @@ export const tombstone = (item, now) => ({ id: item.id, deleted: true, created: 
 
 // ---------- Merging ----------
 
-// The newer edit wins; ties are broken the same way on every device.
+// The newer edit wins; ties are broken the same way on every device. On a
+// tie the fuller copy wins, so an older app version that drops fields it
+// doesn't know can't wipe them out.
 export function isNewer(a, b) {
   if (!b) return true;
   if (a.updated !== b.updated) return (a.updated ?? '') > (b.updated ?? '');
-  return JSON.stringify(a) > JSON.stringify(b);
+  const ja = JSON.stringify(a), jb = JSON.stringify(b);
+  if (ja.length !== jb.length) return ja.length > jb.length;
+  return ja > jb;
 }
 
 // Merge remote items into a local Map. Returns the items that were taken.
@@ -102,6 +123,18 @@ export function themeAndChildren(themes, id) {
 export function topThemeOf(themes, id) {
   const t = themes.get(id);
   return t && !isTopTheme(themes, t) ? t.parent : id;
+}
+
+// Every theme id a card belongs to: its main one and any extra sub-themes.
+export const cardThemes = c => (c.also_in?.length ? [c.theme, ...c.also_in] : [c.theme]);
+export const inThemes = (c, ids) => cardThemes(c).some(id => ids.includes(id));
+
+// The language a theme (or its parent theme) is set to, e.g. "Spanish", or ''.
+export function themeLanguage(themes, id) {
+  const t = themes.get(id);
+  if (!t || t.deleted) return '';
+  const top = isTopTheme(themes, t) ? t : themes.get(t.parent);
+  return top?.language ?? '';
 }
 
 export function themeLabel(themes, id) {

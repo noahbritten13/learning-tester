@@ -4,9 +4,10 @@
 import { uid, nowISO, debounce, dayStart, utf8ToBase64 } from './util.js';
 import {
   cleanCard, newCard, tombstone, mergeInto, toFiles, fromFiles, isManagedPath, toBackup, FORMAT,
-  themeTree, themeAndChildren, themeLabel, topThemeOf, isTopTheme,
+  themeTree, themeAndChildren, themeLabel, topThemeOf, isTopTheme, themeLanguage, cardThemes,
 } from './model.js';
-import { DEFAULT_SETTINGS, makeScheduler, computeStates, replayCard, sortReviews } from './scheduler.js';
+import { DEFAULT_SETTINGS, makeScheduler, computeStates, replayCard, sortReviews, schedKey, reviewKey, keysOf } from './scheduler.js';
+import { splitMeanings, meaningKey, normalize, stripAccents } from './match.js';
 import { GitHubClient, runSync } from './sync.js';
 import { DATA_README } from './texts.js';
 
@@ -33,14 +34,18 @@ class Store extends EventTarget {
     this.cards = new Map();
     this.entries = new Map();
     this.reviews = new Map();
-    this.reviewsByCard = new Map();
+    this.reviewsByKey = new Map(); // schedule key (see scheduler.js) -> reviews
     this.settings = { ...DEFAULT_SETTINGS, updated: '' };
     this.device = null;   // { id, name }
     this.github = null;   // { owner, repo, token }
     this.syncState = { status: 'idle', lastSync: null, error: null, dirty: false };
     this.remoteCache = new Map();
     this.f = makeScheduler(this.settings);
-    this.states = new Map();
+    this.states = new Map();      // schedule key -> replayed state
+    // This device's own preferences (not synced): review direction per language theme.
+    this.prefs = { dir: {} };
+    // Related words you typed during reviews that have no card yet.
+    this.pendingWords = [];
     this.scheduleSync = debounce(() => this.sync().catch(() => {}), 20000);
   }
 
@@ -51,12 +56,14 @@ class Store extends EventTarget {
     const tx = this.db.transaction(STORES, 'readonly');
     const all = s => promisify(tx.objectStore(s).getAll());
     const kv = k => promisify(tx.objectStore('kv').get(k));
-    const [themes, cards, entries, reviews, settings, device, github, syncState, cache] = await Promise.all([
+    const [themes, cards, entries, reviews, settings, device, github, syncState, cache, prefs, pending] = await Promise.all([
       all('themes'), all('cards'), all('entries'), all('reviews'),
-      kv('settings'), kv('device'), kv('github'), kv('syncState'), kv('remoteCache'),
+      kv('settings'), kv('device'), kv('github'), kv('syncState'), kv('remoteCache'), kv('prefs'), kv('pendingWords'),
     ]);
     themes.forEach(t => this.themes.set(t.id, t));
-    cards.forEach(c => this.cards.set(c.id, c));
+    cards.forEach(c => this.cards.set(c.id, cleanCard(c)));
+    if (prefs) this.prefs = { ...this.prefs, ...prefs };
+    if (Array.isArray(pending)) this.pendingWords = pending;
     entries.forEach(e => this.entries.set(e.id, e));
     reviews.forEach(r => this.reviews.set(r.id, r));
     if (settings) this.settings = { ...DEFAULT_SETTINGS, ...settings };
@@ -82,12 +89,13 @@ class Store extends EventTarget {
 
   rebuild() {
     this.f = makeScheduler(this.settings);
-    this.reviewsByCard = new Map();
+    this.reviewsByKey = new Map();
     for (const r of this.reviews.values()) {
-      if (!this.reviewsByCard.has(r.card)) this.reviewsByCard.set(r.card, []);
-      this.reviewsByCard.get(r.card).push(r);
+      const key = reviewKey(r);
+      if (!this.reviewsByKey.has(key)) this.reviewsByKey.set(key, []);
+      this.reviewsByKey.get(key).push(r);
     }
-    this.states = computeStates(this.liveCards(), this.reviewsByCard, this.f);
+    this.states = computeStates(this.liveCards(), this.reviewsByKey, this.f);
     this.statesDay = dayStart().getTime();
     this.emit();
   }
@@ -146,8 +154,119 @@ class Store extends EventTarget {
     return !!t && isTopTheme(this.themes, t);
   }
 
+  // id: a card id, or a schedule key ("<id>@r" for the meaning → word direction).
   cardState(id) {
     return this.states.get(id);
+  }
+
+  reviewCount(card) {
+    return keysOf(card).reduce((n, k) => n + (this.reviewsByKey.get(k)?.length ?? 0), 0);
+  }
+
+  // Work out schedules for a card's directions that don't have one yet (new cards, or a card changed to a word).
+  ensureStates(c) {
+    for (const key of keysOf(c)) {
+      if (!this.states.has(key)) this.states.set(key, replayCard(c, this.reviewsByKey.get(key) ?? [], this.f, dayStart()));
+    }
+  }
+
+  // ---------- Languages and words ----------
+
+  themeLanguage(id) {
+    return themeLanguage(this.themes, id);
+  }
+
+  async setThemeLanguage(id, language) {
+    const t = { ...this.themes.get(id), language: language.trim(), updated: nowISO() };
+    if (!t.language) delete t.language;
+    this.themes.set(id, t);
+    await this.put('themes', [t]);
+    await this.changed();
+  }
+
+  // Review direction for a language theme on this device: 'fwd', 'rev' or 'mixed'.
+  dirMode(topId) {
+    return this.prefs.dir[topId] ?? 'mixed';
+  }
+
+  dirOf = card => this.dirMode(this.topThemeOf(card.theme));
+
+  async setDirMode(topId, mode) {
+    this.prefs = { ...this.prefs, dir: { ...this.prefs.dir, [topId]: mode } };
+    await this.setKv('prefs', this.prefs);
+    this.emit();
+  }
+
+  // Active word cards in the same theme (including all its sub-themes) as `themeId`.
+  wordsInTheme(themeId) {
+    const top = this.topThemeOf(themeId);
+    return this.liveCards().filter(c => c.type === 'word' && c.status !== 'archived' && this.topThemeOf(c.theme) === top);
+  }
+
+  // Find one of your words by how it's written (ignoring capitals and accents).
+  findWord(text, themeId) {
+    const want = stripAccents(normalize(text));
+    if (!want) return null;
+    return this.wordsInTheme(themeId).find(c => c.prompts.some(p => stripAccents(normalize(p)) === want)) ?? null;
+  }
+
+  // Other words in the theme that share a meaning with this card, e.g. tirar and echar ("to throw").
+  synonyms(card) {
+    const keys = new Set(splitMeanings(card.answer).map(meaningKey));
+    return this.wordsInTheme(card.theme).filter(c => c.id !== card.id && splitMeanings(c.answer).some(m => keys.has(meaningKey(m))));
+  }
+
+  // Linked words, both ways: [{ card, kind: 'opposite' | 'related' }].
+  linksOf(id) {
+    const card = this.cards.get(id);
+    if (!card) return [];
+    const out = new Map();
+    const add = (otherId, kind) => {
+      const other = this.cards.get(otherId);
+      if (other && !other.deleted && other.status !== 'archived' && otherId !== id && !out.has(otherId)) out.set(otherId, { card: other, kind });
+    };
+    card.opposites.forEach(x => add(x, 'opposite'));
+    card.related.forEach(x => add(x, 'related'));
+    for (const c of this.liveCards()) {
+      if (c.opposites.includes(id)) add(c.id, 'opposite');
+      if (c.related.includes(id)) add(c.id, 'related');
+    }
+    return [...out.values()];
+  }
+
+  // Link two words (replacing any existing link between them).
+  async linkWords(a, b, kind) {
+    await this.unlinkWords(a, b, { save: false });
+    const c = this.cards.get(a);
+    const field = kind === 'opposite' ? 'opposites' : 'related';
+    await this.updateCard(a, { [field]: [...c[field], b] });
+  }
+
+  async unlinkWords(a, b, { save = true } = {}) {
+    const changed = [];
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const c = this.cards.get(x);
+      if (c && !c.deleted && (c.opposites.includes(y) || c.related.includes(y))) {
+        changed.push(cleanCard({ ...c, opposites: c.opposites.filter(i => i !== y), related: c.related.filter(i => i !== y), updated: nowISO() }));
+      }
+    }
+    if (!changed.length) return;
+    changed.forEach(c => this.cards.set(c.id, c));
+    await this.put('cards', changed);
+    if (save) await this.changed();
+  }
+
+  async addPendingWord(item) {
+    const same = w => stripAccents(normalize(w.word)) === stripAccents(normalize(item.word)) && w.theme === item.theme;
+    if (this.pendingWords.some(same)) return;
+    this.pendingWords = [...this.pendingWords, { ...item, added: nowISO() }];
+    await this.setKv('pendingWords', this.pendingWords);
+  }
+
+  async removePendingWord(word, theme) {
+    this.pendingWords = this.pendingWords.filter(w => !(w.word === word && w.theme === theme));
+    await this.setKv('pendingWords', this.pendingWords);
+    this.emit();
   }
 
   reviewsSince(date) {
@@ -180,7 +299,7 @@ class Store extends EventTarget {
   }
 
   themeInUse(id) {
-    return this.liveCards().some(c => c.theme === id) || [...this.entries.values()].some(e => e.theme === id && !e.deleted);
+    return this.liveCards().some(c => cardThemes(c).includes(id)) || [...this.entries.values()].some(e => e.theme === id && !e.deleted);
   }
 
   hasSubThemes(id) {
@@ -203,7 +322,12 @@ class Store extends EventTarget {
     const cards = list.map(fields => newCard(fields, { id: uid('c'), now }));
     cards.forEach(c => this.cards.set(c.id, c));
     await this.put('cards', cards);
-    for (const c of cards) this.states.set(c.id, replayCard(c, [], this.f));
+    for (const c of cards) this.ensureStates(c);
+    // Word cards make their theme a language theme, named after the theme, unless it already is one.
+    for (const top of new Set(cards.filter(c => c.type === 'word').map(c => this.topThemeOf(c.theme)))) {
+      const t = this.themes.get(top);
+      if (t && !t.deleted && !t.language) await this.setThemeLanguage(top, t.name);
+    }
     await this.changed();
     return cards;
   }
@@ -212,19 +336,59 @@ class Store extends EventTarget {
     const c = cleanCard({ ...this.cards.get(id), ...fields, id, updated: nowISO() });
     this.cards.set(id, c);
     await this.put('cards', [c]);
-    if (!this.states.has(id)) this.states.set(id, replayCard(c, this.reviewsByCard.get(id) ?? [], this.f));
+    this.ensureStates(c);
     await this.changed();
     return c;
   }
 
-  // Change several cards at once (e.g. move to a sub-theme), with one save.
+  // Change several cards at once, with one save. fields: an object, or a
+  // function from the card to its changed fields (null to leave it alone).
   async updateCards(ids, fields) {
     const now = nowISO();
-    const changed = ids.map(id => cleanCard({ ...this.cards.get(id), ...fields, id, updated: now }));
+    const changed = [];
+    for (const id of ids) {
+      const old = this.cards.get(id);
+      const patch = typeof fields === 'function' ? fields(old) : fields;
+      if (old && patch) changed.push(cleanCard({ ...old, ...patch, id, updated: now }));
+    }
     changed.forEach(c => this.cards.set(c.id, c));
     await this.put('cards', changed);
     await this.changed();
     return changed;
+  }
+
+  // Move cards to another theme. Extra sub-themes are kept if they belong to the same theme.
+  moveCards(ids, theme) {
+    const top = this.topThemeOf(theme);
+    return this.updateCards(ids, c => ({
+      theme,
+      also_in: [c.theme, ...c.also_in].filter(t => t !== theme && this.topThemeOf(t) === top && !this.isTopTheme(t)),
+    }));
+  }
+
+  // Add cards to an extra sub-theme of their own theme. Returns how many were added and skipped.
+  async addCardsToTheme(ids, theme) {
+    const top = this.topThemeOf(theme);
+    let skipped = 0;
+    const changed = await this.updateCards(ids, c => {
+      if (cardThemes(c).includes(theme)) return null;
+      if (this.topThemeOf(c.theme) !== top || this.isTopTheme(theme)) { skipped++; return null; }
+      // A card filed directly under the theme moves into the sub-theme.
+      return this.isTopTheme(c.theme) ? { theme } : { also_in: [...c.also_in, theme] };
+    });
+    return { added: changed.length, skipped };
+  }
+
+  // Take cards out of a sub-theme. A card only in that sub-theme stays (it has to live somewhere).
+  async removeCardsFromTheme(ids, theme) {
+    let skipped = 0;
+    const changed = await this.updateCards(ids, c => {
+      if (c.also_in.includes(theme)) return { also_in: c.also_in.filter(t => t !== theme) };
+      if (c.theme === theme && c.also_in.length) return { theme: c.also_in[0], also_in: c.also_in.slice(1) };
+      if (c.theme === theme) skipped++;
+      return null;
+    });
+    return { removed: changed.length, skipped };
   }
 
   archiveCard(id) {
@@ -236,9 +400,10 @@ class Store extends EventTarget {
   }
 
   async deleteCardForever(id) {
-    const c = tombstone(this.cards.get(id), nowISO());
+    const old = this.cards.get(id);
+    const c = tombstone(old, nowISO());
     this.cards.set(id, c);
-    this.states.delete(id);
+    keysOf(old).forEach(k => this.states.delete(k));
     await this.put('cards', [c]);
     await this.changed();
   }
@@ -268,8 +433,9 @@ class Store extends EventTarget {
 
   // ---------- Reviews ----------
 
-  // kind: 'review' (normal) or 'followup' (a related-word check, phase 3)
-  async addReview({ card, rating, ms, prompt, kind = 'review' }) {
+  // kind: 'review' (normal) or 'followup' (a linked-word check).
+  // dir: 'rev' when a word card was asked meaning → word.
+  async addReview({ card, rating, ms, prompt, kind = 'review', dir = 'fwd' }) {
     const ts = nowISO();
     const r = {
       id: `${this.device.id}-${Date.now().toString(36)}-${uid('r').slice(2, 6)}`,
@@ -279,15 +445,17 @@ class Store extends EventTarget {
       kind,
       ms: Math.max(0, Math.round(ms)),
       prompt,
+      ...(dir === 'rev' ? { dir: 'rev' } : {}),
       device: this.device.id,
     };
+    const key = schedKey(card, dir);
     this.reviews.set(r.id, r);
-    if (!this.reviewsByCard.has(card)) this.reviewsByCard.set(card, []);
-    this.reviewsByCard.get(card).push(r);
-    this.states.set(card, replayCard(this.cards.get(card), this.reviewsByCard.get(card), this.f, dayStart()));
+    if (!this.reviewsByKey.has(key)) this.reviewsByKey.set(key, []);
+    this.reviewsByKey.get(key).push(r);
+    this.states.set(key, replayCard(this.cards.get(card), this.reviewsByKey.get(key), this.f, dayStart()));
     await this.put('reviews', [r]);
     await this.changed();
-    return { review: r, state: this.states.get(card).state };
+    return { review: r, state: this.states.get(key).state };
   }
 
   // ---------- Settings and device ----------
@@ -372,7 +540,7 @@ class Store extends EventTarget {
           desired: remoteFiles => {
             const files = toFiles(this.dataSnapshot());
             const readme = remoteFiles.get('README.md')?.text ?? '';
-            if (!readme.includes('learning-tester:data-readme v2')) files.set('README.md', DATA_README);
+            if (!readme.includes('learning-tester:data-readme v3')) files.set('README.md', DATA_README);
             // Add the coach instructions, or update them when the app has a newer version.
             const coachVersion = t => Number(t?.match(/learning-tester:coach v(\d+)/)?.[1] ?? 0);
             const remoteCoach = remoteFiles.get('coach/INSTRUCTIONS.md')?.text;

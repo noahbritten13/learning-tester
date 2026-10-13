@@ -22,14 +22,21 @@ function extractJson(text) {
   }
 }
 
+// Names of linked words: a list, or one string separated by commas.
+const nameList = v => asArray(v).flatMap(x => str(x).split(',')).map(x => x.trim()).filter(Boolean);
+
 export function normalizeCard(raw) {
-  const prompts = strList(raw.prompts ?? raw.questions ?? raw.prompt ?? raw.question ?? raw.q ?? raw.front);
-  const answer = str(raw.answer ?? raw.a ?? raw.back);
+  const isWord = str(raw.type).toLowerCase() === 'word' || raw.word != null;
+  const prompts = strList(raw.word ?? raw.prompts ?? raw.questions ?? raw.prompt ?? raw.question ?? raw.q ?? raw.front);
+  const answer = str(raw.meaning ?? raw.answer ?? raw.a ?? raw.back);
   const author = str(raw.author).toLowerCase() === 'claude' || raw.suggested === true ? 'claude' : 'me';
   return {
     prompts,
     answer,
-    type: str(raw.type).toLowerCase() === 'exact' ? 'exact' : 'concept',
+    type: isWord ? 'word' : str(raw.type).toLowerCase() === 'exact' ? 'exact' : 'concept',
+    note: str(raw.note ?? raw.notes ?? raw.grammar),
+    // Linked words by name; turned into links when the cards are saved.
+    linkNames: { opposite: nameList(raw.opposites ?? raw.opposite), related: nameList(raw.related) },
     accept: strList(raw.accept ?? raw.alternatives ?? raw.also),
     author,
     source: str(raw.source),
@@ -51,20 +58,50 @@ function normalizeEntry(raw) {
 }
 
 // "Spanish / Verbs", "Spanish > Verbs" or "Spanish › Verbs" name a theme and sub-theme.
+// Several sub-themes are separated by commas: "Spanish / Verbs, Irregular".
 function splitTheme(out, theme, subtheme = '') {
   // A slash only separates when it has spaces around it, so "AI/ML" stays one name.
   const parts = str(theme).split(/\s+\/\s+|\s*[›>]\s*/).filter(Boolean);
   out.themeName = parts[0] ?? '';
-  out.subthemeName = str(subtheme) || parts.slice(1).join(' ') || '';
+  const subs = Array.isArray(subtheme) ? subtheme : str(subtheme) ? [subtheme] : parts.slice(1, 2);
+  setSubs(out, subs.join(','));
+}
+
+function setSubs(out, text) {
+  const subs = str(text).split(',').map(x => x.trim()).filter(Boolean);
+  out.subthemeName = subs[0] ?? '';
+  out.extraSubs = subs.slice(1);
+}
+
+// A word line: "esconder = to hide; note: …; opposite: encontrar, mostrar; related: buscar"
+const WORD_LINE = /^\s*(?:[-*•]\s*)?([^=:]+?)\s+=\s+(.+)$/;
+
+export function parseWordLine(line) {
+  const m = line.match(WORD_LINE);
+  if (!m) return null;
+  const [meaning, ...extras] = m[2].split(/;\s*(?=(?:note|notes|opposites?|related)\s*:)/i);
+  const card = {
+    prompts: [m[1].trim()], answer: meaning.trim().replace(/;$/, ''), type: 'word', note: '', linkNames: { opposite: [], related: [] },
+    accept: [], author: 'me', source: '', unverified: false, tags: [],
+  };
+  for (const extra of extras) {
+    const kv = extra.match(/^(note|notes|opposites?|related)\s*:\s*(.*)$/i);
+    if (!kv) continue;
+    const key = kv[1].toLowerCase();
+    const value = kv[2].trim().replace(/;$/, '');
+    if (key.startsWith('note')) card.note = value;
+    else card.linkNames[key.startsWith('opposite') ? 'opposite' : 'related'].push(...nameList(value));
+  }
+  return card;
 }
 
 function parseJson(data) {
-  const out = { format: 'json', themeName: '', subthemeName: '', entry: null, cards: [], warnings: [] };
+  const out = { format: 'json', themeName: '', subthemeName: '', extraSubs: [], entry: null, cards: [], warnings: [] };
   let rawCards;
   if (Array.isArray(data)) {
     rawCards = data;
   } else {
-    splitTheme(out, data.theme, data.subtheme ?? data.sub_theme ?? data.subTheme);
+    splitTheme(out, data.theme, data.subtheme ?? data.subthemes ?? data.sub_theme ?? data.subTheme);
     out.entry = normalizeEntry(data.entry);
     rawCards = asArray(data.cards);
     if (data.entry && !out.entry) out.warnings.push('The entry was skipped because it has no title.');
@@ -80,10 +117,10 @@ function parseJson(data) {
 }
 
 // Labels may be bold (**Q:**), numbered (Q1:), or bulleted (- Q:).
-const LABEL = /^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*(q|question|a|answer|source|s|unverified|type|accept|also|tags|theme|sub-?theme|sub_theme)\s*\d*\s*(?:\*\*|__)?\s*[:.)]\s*(?:\*\*|__)?\s?(.*)$/i;
+const LABEL = /^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*(q|question|a|answer|source|s|unverified|type|accept|also|tags|theme|sub-?themes?|sub_themes?|note)\s*\d*\s*(?:\*\*|__)?\s*[:.)]\s*(?:\*\*|__)?\s?(.*)$/i;
 
 function parseText(text) {
-  const out = { format: 'text', themeName: '', subthemeName: '', entry: null, cards: [], warnings: [] };
+  const out = { format: 'text', themeName: '', subthemeName: '', extraSubs: [], entry: null, cards: [], warnings: [] };
   let card = null;
   let field = null;
 
@@ -96,7 +133,7 @@ function parseText(text) {
     field = null;
   };
   const fresh = () => ({
-    prompts: [], answer: '', type: 'concept', accept: [], author: 'me', source: '', unverified: false, tags: [],
+    prompts: [], answer: '', type: 'concept', note: '', linkNames: { opposite: [], related: [] }, accept: [], author: 'me', source: '', unverified: false, tags: [],
   });
 
   for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
@@ -110,7 +147,7 @@ function parseText(text) {
         continue;
       }
       if (key.startsWith('sub')) {
-        if (!card) out.subthemeName = value;
+        if (!card) setSubs(out, value);
         continue;
       }
       if (key === 'q' || key === 'question') {
@@ -132,7 +169,10 @@ function parseText(text) {
         card.unverified = !/^(no|false)$/i.test(value);
         field = null;
       } else if (key === 'type') {
-        card.type = /exact/i.test(value) ? 'exact' : 'concept';
+        card.type = /exact/i.test(value) ? 'exact' : /word/i.test(value) ? 'word' : 'concept';
+        field = null;
+      } else if (key === 'note') {
+        card.note = value;
         field = null;
       } else if (key === 'accept' || key === 'also') {
         card.accept.push(...value.split('|').map(s => s.trim()).filter(Boolean));
@@ -145,6 +185,13 @@ function parseText(text) {
     }
     if (!line.trim()) {
       if (card && card.answer) finish();
+      continue;
+    }
+    // A word line, outside a Q/A card.
+    const word = (!card || card.type === 'word') && parseWordLine(line);
+    if (word) {
+      finish();
+      out.cards.push(word);
       continue;
     }
     // Continuation of a multi-line question or answer.
@@ -168,6 +215,6 @@ export function parseImport(text) {
     }
   }
   const res = parseText(t);
-  if (!res.cards.length) res.error = 'No cards found. Use Q: and A: lines, or paste the JSON Claude produced.';
+  if (!res.cards.length) res.error = 'No cards found. Use Q: and A: lines, word = meaning lines, or paste the JSON Claude produced.';
   return res;
 }
