@@ -477,3 +477,6 @@ fieldset.also-in .check-row { margin-top: 6px; }
 .pending-item .form input { margin-top: 6px; }
 .pending-item select { width: auto; }
 .fu-effect { margin: 10px 0 0; }
+.existing { background: var(--accent-soft); color: var(--text); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-size: 0.9rem; }
+.existing-diff { margin: 6px 0; display: grid; gap: 2px; }
+.existing .check-row { margin-top: 4px; }

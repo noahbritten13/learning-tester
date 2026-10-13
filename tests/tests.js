@@ -3,7 +3,7 @@
 
 import { checkAnswer, checkMeaning, splitMeanings, meaningKey } from '../js/match.js';
 import { cardHints, cardErrors } from '../js/rules.js';
-import { parseImport } from '../js/importer.js';
+import { parseImport, matchExisting, wordKey } from '../js/importer.js';
 import {
   makeScheduler, replayCard, computeStates, buildQueue, Session, promptIndex, previewRatings, Rating, State, DEFAULT_SETTINGS,
   schedKey, parseKey, reviewKey, keysOf,
@@ -710,6 +710,26 @@ describe('Importing words', () => {
     eq([q.subthemeName, q.cards[0].subthemes, q.cards[1].subthemes], ['Verbs', ['Verbs', 'Irregular'], []]);
     const j = parseImport('{"theme":"Spanish","subtheme":"Verbs","cards":[{"type":"word","word":"ir","meaning":"to go","subthemes":["Verbs","Irregular"]},{"q":"a","a":"b"}]}');
     eq([j.cards[0].subthemes, j.cards[1].subthemes], [['Verbs', 'Irregular'], []]);
+  });
+  test('imported words that you already have are matched exactly', () => {
+    const mine = [
+      card('tener', { type: 'word', prompts: ['tener'], answer: 'to have' }),
+      card('esta', { type: 'word', prompts: ['está'], answer: 'is' }),
+      card('old', { type: 'word', prompts: ['ir'], answer: 'to go', status: 'archived' }),
+      card('ir2', { type: 'word', prompts: ['ir'], answer: 'to go' }),
+      card('q', { type: 'concept', prompts: ['comer'], answer: 'to eat' }),
+    ];
+    const imported = parseImport('  Tener  = to have\nesta = this\nestá = is\nir = to go\ncomer = to eat\nQ: tener?\nA: x').cards;
+    eq(matchExisting(imported, mine).map(c => c?.id ?? null), ['tener', null, 'esta', 'ir2', null, null]);
+  });
+  test('word matching ignores capitals and spaces at the ends, but not accents', () => {
+    eq(wordKey('  Tener '), 'tener');
+    ok(wordKey('esta') !== wordKey('está'));
+    eq(wordKey('e\u0301'), wordKey('\u00e9'), 'the same accent typed two ways still matches');
+  });
+  test('an archived match is used only when there is no active one', () => {
+    const old = card('old', { type: 'word', prompts: ['ir'], answer: 'to go', status: 'archived' });
+    eq(matchExisting([{ type: 'word', prompts: ['ir'] }], [old])[0].id, 'old');
   });
   test('Q/A cards are unaffected by "=" inside an answer', () => {
     const r = parseImport('Q: What is 2+2?\nA: 2 + 2 = 4');

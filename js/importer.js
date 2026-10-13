@@ -225,3 +225,22 @@ export function parseImport(text) {
   if (!res.cards.length) res.error = 'No cards found. Use Q: and A: lines, word = meaning lines, or paste the JSON Claude produced.';
   return res;
 }
+
+// ---------- Words you already have ----------
+
+// How a word is compared with your existing words: accents must match;
+// capitals and spaces at the ends don't matter.
+export const wordKey = s => String(s ?? '').normalize('NFC').trim().toLowerCase();
+
+// For each imported card, the existing word card it duplicates, or null.
+// existing: your cards in the same top theme (only word cards are compared).
+export function matchExisting(cards, existing) {
+  const byWord = new Map();
+  for (const c of existing) {
+    if (c.type !== 'word' || c.deleted) continue;
+    const key = wordKey(c.prompts?.[0]);
+    // Prefer an active card over an archived one with the same word.
+    if (key && (!byWord.has(key) || (byWord.get(key).status === 'archived' && c.status !== 'archived'))) byWord.set(key, c);
+  }
+  return cards.map(c => (c.type === 'word' ? byWord.get(wordKey(c.prompts?.[0])) ?? null : null));
+}

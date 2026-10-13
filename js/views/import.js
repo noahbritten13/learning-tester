@@ -1,5 +1,5 @@
 import { store } from '../store.js';
-import { parseImport } from '../importer.js';
+import { parseImport, matchExisting } from '../importer.js';
 import { cardHints, cardErrors } from '../rules.js';
 import { esc, multiline, header, go, render, toast, readFile, themePicker, pickerHandlers, pickerError, resolvePick } from '../ui.js';
 import { stripAccentsLower } from '../util.js';
@@ -10,6 +10,55 @@ let st = { step: 'paste', text: '', parsed: null, theme: '', newTheme: '', newSu
 const reset = () => {
   st = { step: 'paste', text: '', parsed: null, theme: st.theme, newTheme: '', newSub: '', subParent: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
 };
+
+// ---------- Words you already have ----------
+
+// The top theme the cards are going into, or null for a brand-new theme.
+function importTop() {
+  if (st.theme === '__new') return null;
+  if (st.theme === '__newsub') return store.themes.get(st.subParent) ? st.subParent : null;
+  return store.themes.get(st.theme) ? store.topThemeOf(st.theme) : null;
+}
+
+// The existing word card an imported word card duplicates (same top theme, same word), or null.
+function existingFor(card) {
+  const top = importTop();
+  if (!top || card.type !== 'word') return null;
+  const words = store.liveCards().filter(c => c.type === 'word' && store.topThemeOf(c.theme) === top);
+  return matchExisting([card], words)[0];
+}
+
+// Names of the sub-themes a card will go into: its own, or the import's.
+function targetNames(card) {
+  if (card.subthemes?.length) return card.subthemes;
+  let main = '';
+  if (st.theme === '__newsub') main = st.newSub.trim();
+  else if (st.theme === '__new') main = st.newSub.trim();
+  else if (store.themes.get(st.theme) && !store.isTopTheme(st.theme)) main = store.themes.get(st.theme).name;
+  return main ? [main, ...(st.parsed?.extraSubs ?? [])] : [];
+}
+
+const differs = (card, ex) => card.answer.trim() !== ex.answer || (card.note ?? '').trim() !== ex.note;
+
+function existingHtml(item, ex) {
+  const c = item.card;
+  const inNames = new Set([ex.theme, ...ex.also_in].map(id => store.themes.get(id)?.name.toLowerCase()).filter(Boolean));
+  const names = targetNames(c);
+  const toAdd = names.filter(n => !inNames.has(n.toLowerCase()));
+  const already = names.filter(n => inNames.has(n.toLowerCase()));
+  const where = toAdd.length
+    ? `will be added to: ${toAdd.map(esc).join(', ')}${already.length ? ` (already in ${already.map(esc).join(', ')})` : ''}`
+    : names.length ? `nothing to add, it's already in ${already.map(esc).join(', ')}` : 'no sub-theme to add it to';
+  return `<div class="existing">
+    <div><strong>Already in your cards</strong>${ex.status === 'archived' ? ' (archived)' : ''} — ${where}. Its review history is kept.</div>
+    ${differs(c, ex) ? `
+      <div class="existing-diff">
+        <div><span class="muted small">Yours:</span> ${esc(ex.prompts[0])} = ${esc(ex.answer)}${ex.note ? ` <span class="muted">· ${esc(ex.note)}</span>` : ''}</div>
+        <div><span class="muted small">Imported:</span> ${esc(c.prompts[0])} = ${esc(c.answer)}${c.note ? ` <span class="muted">· ${esc(c.note)}</span>` : ''}</div>
+      </div>
+      <label class="check-row"><input type="checkbox" data-change="itemUpdate" data-key="${item.key}" ${item.update ? 'checked' : ''}> Update meaning/note to the imported ones</label>` : ''}
+  </div>`;
+}
 
 // After saving: link imported words to each other and to your existing words, by name.
 // Returns the names that couldn't be found.
@@ -88,9 +137,11 @@ function itemHtml(item) {
       <button type="button" class="btn btn-small btn-secondary" data-action="discard" data-key="${item.key}">Discard</button></div>
     </li>`;
   }
+  const existing = existingFor(c);
   return `<li class="import-item ${item.include ? '' : 'excluded'}">
     <label class="import-check"><input type="checkbox" data-change="include" data-key="${item.key}" ${item.include ? 'checked' : ''} ${errors.length ? 'disabled' : ''} aria-label="Include this card"></label>
     <div class="import-body">
+      ${existing ? existingHtml(item, existing) : ''}
       ${c.type === 'word'
         ? `<div class="card-q">${esc(c.prompts[0] ?? '')} <span class="card-a-inline">= ${esc(c.answer)}</span></div>
            ${c.note ? `<div class="card-a muted">${esc(c.note)}</div>` : ''}
@@ -98,7 +149,7 @@ function itemHtml(item) {
            ${c.linkNames?.related.length ? `<div class="muted small">Related: ${c.linkNames.related.map(esc).join(', ')}</div>` : ''}`
         : `${c.prompts.map((p, i) => `<div class="card-q ${i ? 'alt' : ''}">${i ? '<span class="muted small">or: </span>' : ''}${multiline(p)}</div>`).join('')}
       <div class="card-a">${multiline(c.answer)}</div>`}
-      ${c.subthemes?.length ? `<div class="muted small">Sub-themes: ${c.subthemes.map(esc).join(', ')}</div>` : ''}
+      ${c.subthemes?.length && !existing ? `<div class="muted small">Sub-themes: ${c.subthemes.map(esc).join(', ')}</div>` : ''}
       <div class="muted small">${[c.type === 'exact' ? 'Marked automatically' : c.type === 'word' ? 'Language word, tested both ways' : '', c.source ? `Source: ${esc(c.source)}` : '', c.unverified ? '<span class="warn-text">Unverified</span>' : ''].filter(Boolean).join(' · ')}</div>
       ${hints.length ? `<ul class="hint-list">${hints.map(h => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
       <button type="button" class="link small" data-action="edit" data-key="${item.key}">Edit</button>
@@ -127,6 +178,13 @@ tener = to have; note: e→ie, irregular 1st person</pre>
         <label class="btn btn-secondary file-btn">Choose file<input type="file" accept=".json,.txt,.md,text/plain,application/json" data-change="file" hidden></label>
       </div>
     </main>`;
+}
+
+function saveLabel(n) {
+  const existing = chosen().filter(i => existingFor(i.card)).length;
+  if (!existing) return `Save ${n} card${n === 1 ? '' : 's'}`;
+  const fresh = n - existing;
+  return fresh ? `Save ${fresh} new, ${existing} existing` : `Save ${existing} existing card${existing === 1 ? '' : 's'}`;
 }
 
 function previewHtml() {
@@ -177,7 +235,7 @@ function previewHtml() {
       ${claudeSection}
 
       <div class="sticky-actions">
-        <button type="button" class="btn btn-grow" data-action="save" ${n ? '' : 'disabled'}>Save ${n} card${n === 1 ? '' : 's'}</button>
+        <button type="button" class="btn btn-grow" data-action="save" ${n ? '' : 'disabled'}>${saveLabel(n)}</button>
         <button type="button" class="btn btn-secondary" data-action="cancel">Cancel</button>
       </div>
     </main>`;
@@ -188,8 +246,11 @@ function savedHtml() {
   return `
     ${header('Saved')}
     <main class="page center">
-      <p class="big-number">${s.count}</p>
-      <p>card${s.count === 1 ? '' : 's'} saved to <strong>${esc(s.themeName)}</strong>${s.entry ? `, with the entry “${esc(s.entry)}”` : ''}.</p>
+      ${s.count ? `<p class="big-number">${s.count}</p>
+      <p>new card${s.count === 1 ? '' : 's'} saved to <strong>${esc(s.themeName)}</strong>${s.entry ? `, with the entry “${esc(s.entry)}”` : ''}.</p>` : '<p>No new cards.</p>'}
+      ${s.added ? `<p>${s.added} existing card${s.added === 1 ? ' was' : 's were'} added to sub-themes.</p>` : ''}
+      ${s.unchanged ? `<p class="muted">${s.unchanged} card${s.unchanged === 1 ? ' was' : 's were'} already in your cards and ${s.unchanged === 1 ? 'its' : 'their'} sub-themes.</p>` : ''}
+      ${s.updated ? `<p class="muted">Meaning/note updated on ${s.updated} existing card${s.updated === 1 ? '' : 's'}.</p>` : ''}
       ${s.missing?.length ? `<p class="notice">Not linked, because they aren't in your cards yet: ${s.missing.map(esc).join(', ')}.</p>` : ''}
       <div class="row center-row">
         <a class="btn" href="#/review?start=${s.theme}">Review them now</a>
@@ -234,6 +295,7 @@ export function importView(params) {
       include(el) { find(el).include = el.checked; render(); },
       itemExact(el) { find(el).card.type = el.checked ? 'exact' : 'concept'; },
       itemUnverified(el) { find(el).card.unverified = el.checked; },
+      itemUpdate(el) { find(el).update = el.checked; },
     },
     actions: {
       preview() {
@@ -280,6 +342,8 @@ export function importView(params) {
         if (!items.length) return;
         const themeError = pickerError(st);
         if (themeError) return toast(themeError);
+        // Words you already have aren't created again (worked out before any new theme is made).
+        const matches = items.map(i => existingFor(i.card));
         const theme = await resolvePick(st);
         const top = store.topThemeOf(theme);
         // Extra sub-themes the import names (only when the cards go into a sub-theme).
@@ -297,15 +361,32 @@ export function importView(params) {
           for (const name of i.card.subthemes ?? []) ids.push((await store.addTheme(name, top)).id);
           places.push(ids.length ? { theme: ids[0], also_in: ids.slice(1) } : { theme, also_in: also });
         }
-        const cards = await store.addCards(items.map((i, n) => {
-          const { linkNames, subthemes, ...fields } = i.card;
+        const fresh = items.map((i, n) => n).filter(n => !matches[n]);
+        const created = await store.addCards(fresh.map(n => {
+          const { linkNames, subthemes, ...fields } = items[n].card;
           return { ...fields, ...places[n], entry: entry?.id ?? null };
         }));
-        const missing = await linkByName(cards.map((card, n) => ({ card, names: items[n].card.linkNames ?? {} })), theme);
+        const saved = fresh.map((n, k) => ({ card: created[k], names: items[n].card.linkNames ?? {} }));
+
+        // Existing words: add them to the sub-themes, keep their history, optionally update meaning/note.
+        let added = 0, unchanged = 0, updated = 0;
+        for (const [n, ex] of matches.entries()) {
+          if (!ex) continue;
+          const { theme: main, also_in } = places[n];
+          let gained = 0;
+          for (const t of [main, ...also_in]) if (!store.isTopTheme(t)) gained += (await store.addCardsToTheme([ex.id], t)).added;
+          gained ? added++ : unchanged++;
+          if (items[n].update && differs(items[n].card, ex)) {
+            await store.updateCard(ex.id, { answer: items[n].card.answer, note: items[n].card.note ?? '' });
+            updated++;
+          }
+          saved.push({ card: store.cards.get(ex.id), names: items[n].card.linkNames ?? {} });
+        }
+        const missing = await linkByName(saved, theme);
         // If cards went to different sub-themes, "Review them now" covers the whole theme.
         const mixed = places.some(p => p.theme !== places[0].theme);
         const shown = mixed ? top : places[0].theme;
-        st.saved = { count: items.length, theme: shown, themeName: store.themeName(shown), entry: entry?.title, missing };
+        st.saved = { count: created.length, added, unchanged, updated, theme: shown, themeName: store.themeName(shown), entry: entry?.title, missing };
         st.step = 'saved';
         st.text = '';
         render();

@@ -1,7 +1,7 @@
 // Keeps a copy of the app's files so it opens and works offline.
 // Bump VERSION whenever the app's files change, so phones fetch the new ones.
 
-const VERSION = 'v1.2.1';
+const VERSION = 'v1.2.2';
 const CACHE = `learning-tester-${VERSION}`;
 const FILES = [
   './',

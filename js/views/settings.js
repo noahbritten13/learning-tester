@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS } from '../scheduler.js';
 import { formatRelative } from '../util.js';
 import { esc, header, go, render, toast, syncPill, downloadOrShare, readFile } from '../ui.js';
 
-export const APP_VERSION = '1.2.1 (language words)';
+export const APP_VERSION = '1.2.2 (language words)';
 const FSRS_VERSION = 'ts-fsrs 5.4.2';
 
 function guessDeviceName() {
