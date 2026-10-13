@@ -30,13 +30,73 @@ export function toast(message, action) {
   toastTimer = setTimeout(() => el.classList.remove('show'), action ? 6000 : 2600);
 }
 
-// <option>s for choosing a theme.
-export function themeOptions(selected, { allowNew = true, placeholder = '' } = {}) {
-  const themes = store.liveThemes();
+// <option>s for choosing a theme: each theme followed by its sub-themes.
+export function themeOptions(selected, { allowNew = true, placeholder = '', topOnly = false } = {}) {
+  const tree = store.themeTree();
+  const opt = (value, label) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${esc(label)}</option>`;
   let html = placeholder ? `<option value="" ${!selected ? 'selected' : ''} disabled>${esc(placeholder)}</option>` : '';
-  html += themes.map(t => `<option value="${t.id}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
-  if (allowNew) html += `<option value="__new" ${selected === '__new' ? 'selected' : ''}>+ New theme…</option>`;
+  for (const { theme, children } of tree) {
+    html += opt(theme.id, theme.name);
+    if (!topOnly) for (const c of children) html += opt(c.id, `${theme.name} › ${c.name}`);
+  }
+  if (allowNew) {
+    html += opt('__new', '+ New theme…');
+    if (tree.length) html += opt('__newsub', '+ New sub-theme…');
+  }
   return html;
+}
+
+// The theme field for writing, importing or moving cards. `pick` holds
+// { theme, newTheme, newSub, subParent } and is updated as you choose.
+export function themePicker(pick, { label = 'Theme', allowNew = true } = {}) {
+  const hasThemes = store.themeTree().length > 0;
+  let html = `<label>${esc(label)}<select data-change="pickTheme">${themeOptions(pick.theme, { allowNew, placeholder: hasThemes ? '' : 'Choose…' })}</select></label>`;
+  if (pick.theme === '__new') {
+    html += `<label>New theme name<input data-input="pickNewTheme" value="${esc(pick.newTheme ?? '')}" placeholder="e.g. Spanish"></label>
+      <label>Sub-theme <span class="muted">(optional)</span><input data-input="pickNewSub" value="${esc(pick.newSub ?? '')}" placeholder="e.g. Verbs"></label>`;
+  } else if (pick.theme === '__newsub') {
+    html += `<label>Sub-theme of<select data-change="pickSubParent">${themeOptions(pick.subParent, { allowNew: false, topOnly: true })}</select></label>
+      <label>New sub-theme name<input data-input="pickNewSub" value="${esc(pick.newSub ?? '')}" placeholder="e.g. Verbs"></label>`;
+  }
+  return html;
+}
+
+// Handlers to merge into a screen's `changes` and `inputs`.
+export function pickerHandlers(pick) {
+  return {
+    changes: {
+      pickTheme(el) {
+        // A new sub-theme goes under the theme that was selected, if any.
+        if (store.themes.get(pick.theme)) pick.subParent = store.topThemeOf(pick.theme);
+        if (!store.themes.get(pick.subParent)) pick.subParent = store.themeTree()[0]?.theme.id;
+        pick.theme = el.value;
+        render();
+      },
+      pickSubParent(el) { pick.subParent = el.value; },
+    },
+    inputs: {
+      pickNewTheme(el) { pick.newTheme = el.value; },
+      pickNewSub(el) { pick.newSub = el.value; },
+    },
+  };
+}
+
+export function pickerError(pick) {
+  if (!pick.theme) return 'Choose a theme.';
+  if (pick.theme === '__new' && !pick.newTheme?.trim()) return 'Give the new theme a name.';
+  if (pick.theme === '__newsub' && !pick.newSub?.trim()) return 'Give the new sub-theme a name.';
+  if (pick.theme === '__newsub' && !store.themes.get(pick.subParent)) return 'Choose which theme the sub-theme belongs to.';
+  return null;
+}
+
+// Creates any new theme or sub-theme, and returns the chosen theme's id.
+export async function resolvePick(pick) {
+  if (pick.theme === '__new') {
+    const top = await store.addTheme(pick.newTheme);
+    return pick.newSub?.trim() ? (await store.addTheme(pick.newSub, top.id)).id : top.id;
+  }
+  if (pick.theme === '__newsub') return (await store.addTheme(pick.newSub, pick.subParent)).id;
+  return pick.theme;
 }
 
 export function header(title, { back, right = '' } = {}) {

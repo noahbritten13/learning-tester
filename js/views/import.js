@@ -1,13 +1,13 @@
 import { store } from '../store.js';
 import { parseImport } from '../importer.js';
 import { cardHints, cardErrors } from '../rules.js';
-import { esc, multiline, header, go, render, toast, themeOptions, readFile } from '../ui.js';
+import { esc, multiline, header, go, render, toast, readFile, themePicker, pickerHandlers, pickerError, resolvePick } from '../ui.js';
 
 // Import state survives re-renders (and leaving the screen and coming back).
-let st = { step: 'paste', text: '', parsed: null, theme: '', newTheme: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
+let st = { step: 'paste', text: '', parsed: null, theme: '', newTheme: '', newSub: '', subParent: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
 
 const reset = () => {
-  st = { step: 'paste', text: '', parsed: null, theme: st.theme, newTheme: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
+  st = { step: 'paste', text: '', parsed: null, theme: st.theme, newTheme: '', newSub: '', subParent: '', items: [], entry: null, keepEntry: true, revealClaude: false, saved: null };
 };
 
 function preview() {
@@ -24,13 +24,23 @@ function preview() {
   st.entry = parsed.entry;
   st.keepEntry = !!parsed.entry;
   st.revealClaude = false;
-  const match = parsed.themeName && store.liveThemes().find(t => t.name.toLowerCase() === parsed.themeName.toLowerCase());
-  if (match) st.theme = match.id;
-  else if (parsed.themeName) {
-    st.theme = '__new';
-    st.newTheme = parsed.themeName;
+  // Use the theme (and sub-theme) the import names, creating them if they're new.
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const topName = parsed.themeName;
+  const subName = parsed.subthemeName ?? '';
+  const top = topName && store.themeTree().find(n => same(n.theme.name, topName));
+  st.newTheme = '';
+  st.newSub = '';
+  if (top && subName) {
+    const sub = top.children.find(c => same(c.name, subName));
+    if (sub) st.theme = sub.id;
+    else Object.assign(st, { theme: '__newsub', subParent: top.theme.id, newSub: subName });
+  } else if (top) {
+    st.theme = top.theme.id;
+  } else if (topName) {
+    Object.assign(st, { theme: '__new', newTheme: topName, newSub: subName });
   } else if (!st.theme || !store.themes.get(st.theme)) {
-    st.theme = store.liveThemes()[0]?.id ?? '__new';
+    st.theme = store.themeTree()[0]?.theme.id ?? '__new';
   }
   st.step = 'preview';
 }
@@ -117,10 +127,7 @@ function previewHtml() {
     ${header('Check and save', { back: '#/import?back=1' })}
     <main class="page">
       ${warnings.map(w => `<p class="notice">${esc(w)}</p>`).join('')}
-      <label>Theme
-        <select data-change="theme">${themeOptions(st.theme)}</select>
-      </label>
-      ${st.theme === '__new' ? `<label>New theme name<input data-input="newTheme" value="${esc(st.newTheme)}"></label>` : ''}
+      ${themePicker(st)}
 
       ${st.entry ? `<section class="entry-preview">
         <label class="check-row"><input type="checkbox" data-change="keepEntry" ${st.keepEntry ? 'checked' : ''}> Save this library entry</label>
@@ -176,7 +183,7 @@ export function importView(params) {
     tab: 'import',
     inputs: {
       text(el) { st.text = el.value; },
-      newTheme(el) { st.newTheme = el.value; },
+      ...pickerHandlers(st).inputs,
       itemPrompts(el) { find(el).card.prompts = el.value.split('\n').map(s => s.trim()).filter(Boolean); },
       itemAnswer(el) { find(el).card.answer = el.value; },
       itemSource(el) { find(el).card.source = el.value; },
@@ -189,7 +196,7 @@ export function importView(params) {
         preview();
         render();
       },
-      theme(el) { st.theme = el.value; render(); },
+      ...pickerHandlers(st).changes,
       keepEntry(el) { st.keepEntry = el.checked; },
       include(el) { find(el).include = el.checked; render(); },
       itemExact(el) { find(el).card.type = el.checked ? 'exact' : 'concept'; },
@@ -238,8 +245,9 @@ export function importView(params) {
       async save() {
         const items = chosen().filter(i => !cardErrors(i.card).length);
         if (!items.length) return;
-        if (st.theme === '__new' && !st.newTheme.trim()) return toast('Give the new theme a name.');
-        const theme = st.theme === '__new' ? (await store.addTheme(st.newTheme)).id : st.theme;
+        const themeError = pickerError(st);
+        if (themeError) return toast(themeError);
+        const theme = await resolvePick(st);
         let entry = null;
         if (st.entry && st.keepEntry) entry = await store.addEntry({ ...st.entry, theme });
         await store.addCards(items.map(i => ({ ...i.card, theme, entry: entry?.id ?? null })));

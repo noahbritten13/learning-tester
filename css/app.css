@@ -411,3 +411,35 @@ summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 0.
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 #toast button { font: inherit; font-weight: 700; color: var(--bg); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
 body.focus-mode #toast { bottom: calc(env(safe-area-inset-bottom) + 16px); }
+
+/* ---------- Sub-themes and selecting cards ---------- */
+.theme-row { gap: 8px; }
+.theme-row.sub { padding-left: 46px; background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); min-height: 52px; }
+.theme-row.sub .theme-name { font-weight: 500; }
+.expander {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-left: -6px;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.expander.open { transform: rotate(90deg); color: var(--accent); }
+.expander-space { width: 24px; flex-shrink: 0; }
+.row.tight { margin-top: 0; gap: 12px; flex-wrap: nowrap; }
+.card-row.selectable { display: flex; gap: 12px; align-items: flex-start; margin: 0; font-weight: 400; cursor: pointer; }
+.card-row.selectable .check { margin-top: 2px; flex-shrink: 0; }
+.card-row.picked { background: var(--accent-soft); }
+.selection-bar { display: block; border: 1px solid var(--border); background: var(--surface); box-shadow: 0 6px 24px rgb(0 0 0 / 0.12); }
+.selection-bar label:first-of-type { margin-top: 4px; }
+.selection-count { font-weight: 700; }
+.bar-right .link { padding: 6px 8px; }
+.theme-row.admin { flex-wrap: wrap; row-gap: 0; padding-top: 10px; padding-bottom: 8px; }
+.theme-row.admin .theme-name { flex: 1 1 100%; }
+.theme-row.admin .row.tight { flex-wrap: wrap; }

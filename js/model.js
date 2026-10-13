@@ -75,6 +75,54 @@ export function mergeInto(localMap, remoteItems) {
   return taken;
 }
 
+// ---------- Themes (with one level of sub-themes) ----------
+// A theme may have `parent`: the id of a top-level theme. A sub-theme whose
+// parent is missing or deleted is treated as a top-level theme.
+
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+export function isTopTheme(themes, t) {
+  const p = t.parent ? themes.get(t.parent) : null;
+  return !p || p.deleted;
+}
+
+// [{ theme, children: [theme, ...] }, ...] sorted by name.
+export function themeTree(themes) {
+  const live = [...themes.values()].filter(t => !t.deleted);
+  const tops = live.filter(t => isTopTheme(themes, t)).sort(byName);
+  return tops.map(theme => ({ theme, children: live.filter(c => c.parent === theme.id && c.id !== theme.id).sort(byName) }));
+}
+
+// A theme plus its sub-themes: what "review Spanish" or "filter by Spanish" covers.
+export function themeAndChildren(themes, id) {
+  const kids = [...themes.values()].filter(t => !t.deleted && t.parent === id && t.id !== id).map(t => t.id);
+  return [id, ...kids];
+}
+
+export function topThemeOf(themes, id) {
+  const t = themes.get(id);
+  return t && !isTopTheme(themes, t) ? t.parent : id;
+}
+
+export function themeLabel(themes, id) {
+  const t = themes.get(id);
+  if (!t || t.deleted) return 'No theme';
+  return isTopTheme(themes, t) ? t.name : `${themes.get(t.parent).name} › ${t.name}`;
+}
+
+// Folder-style paths for files: "spanish" or "spanish/verbs".
+export function themePaths(themes) {
+  const tree = themeTree(themes);
+  const top = assignSlugs(tree.map(n => n.theme), t => t.name);
+  const out = new Map();
+  for (const { theme, children } of tree) {
+    out.set(theme.id, top.get(theme.id));
+    const kids = assignSlugs(children, t => t.name);
+    for (const c of children) out.set(c.id, `${top.get(theme.id)}/${kids.get(c.id)}`);
+  }
+  return out;
+}
+
 // ---------- Writing files ----------
 
 function assignSlugs(items, nameOf) {
@@ -154,9 +202,8 @@ export function markdownToEntry(text) {
 export function toFiles(data) {
   const files = new Map();
   const themes = [...data.themes.values()];
-  const liveThemes = themes.filter(t => !t.deleted);
-  const themeSlug = assignSlugs(liveThemes, t => t.name);
-  const themeName = new Map(liveThemes.map(t => [t.id, t.name]));
+  const themeSlug = themePaths(data.themes);
+  const themeName = new Map([...themeSlug.keys()].map(id => [id, themeLabel(data.themes, id)]));
 
   files.set('themes.json', json({ format: FORMAT, themes: themes.sort(byCreated) }));
   if (data.settings) files.set('settings.json', json({ format: FORMAT, ...data.settings }));
@@ -201,7 +248,7 @@ export function toFiles(data) {
 // repository (README, coach instructions, your own notes) is left alone.
 export const isManagedPath = p =>
   p === 'themes.json' || p === 'settings.json' ||
-  /^cards\/[^/]+\.json$/.test(p) || /^library\/[^/]+\/[^/]+\.md$/.test(p) || /^reviews\/[^/]+\/[^/]+\.jsonl$/.test(p);
+  /^cards\/([^/]+\/)?[^/]+\.json$/.test(p) || /^library\/[^/]+\/([^/]+\/)?[^/]+\.md$/.test(p) || /^reviews\/[^/]+\/[^/]+\.jsonl$/.test(p);
 
 // ---------- Reading files ----------
 

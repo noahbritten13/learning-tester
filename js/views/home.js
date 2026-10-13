@@ -1,10 +1,11 @@
 import { store } from '../store.js';
-import { dueByTheme, isActive, State } from '../scheduler.js';
+import { buildQueue, isActive, State } from '../scheduler.js';
 import { dayStart, formatDuration, formatRelative } from '../util.js';
 import { esc, go, syncPill } from '../ui.js';
 
 let selecting = false;
 const selected = new Set();
+const expanded = new Set(); // themes whose sub-themes are shown
 
 export function todayStats() {
   const reviews = store.reviewsSince(dayStart());
@@ -48,25 +49,38 @@ function nextDueText() {
 
 export function homeView() {
   store.refreshIfNewDay();
-  const themes = store.liveThemes();
-  const active = store.liveCards().filter(isActive);
-  const { byTheme, total } = dueByTheme({ cards: store.liveCards(), states: store.states, settings: store.settings });
+  const tree = store.themeTree();
+  const all = store.liveCards();
+  const active = all.filter(isActive);
+  const queueFor = themeIds => buildQueue({ cards: all, states: store.states, settings: store.settings, themeIds }).counts;
+  const total = queueFor(null);
   const dueNow = total.learning + total.review;
   const anyDue = dueNow + total.new > 0;
 
-  const themeRows = themes.map(t => {
-    const row = byTheme.get(t.id) ?? { due: 0, new: 0 };
-    const count = active.filter(c => c.theme === t.id).length;
-    const meta = [row.due ? `${row.due} due` : '', row.new ? `${row.new} new` : ''].filter(Boolean).join(' · ') || (count ? 'Nothing due' : 'No cards yet');
+  // One row: a theme (covering its sub-themes) or a single sub-theme.
+  const row = (theme, scope, { sub = false, kids = 0 } = {}) => {
+    const q = queueFor(scope);
+    const due = q.learning + q.review;
+    const ids = new Set(scope);
+    const count = active.filter(c => ids.has(c.theme)).length;
+    const meta = [due ? `${due} due` : '', q.new ? `${q.new} new` : ''].filter(Boolean).join(' · ') || (count ? 'Nothing due' : 'No cards yet');
     const control = selecting
-      ? `<input type="checkbox" class="check" data-change="pick" value="${t.id}" ${selected.has(t.id) ? 'checked' : ''} aria-label="Select ${esc(t.name)}">`
-      : row.due + row.new
-        ? `<a class="btn btn-small" href="#/review?start=${t.id}">Review</a>`
-        : '';
-    return `<li class="theme-row">
-      <div><div class="theme-name">${esc(t.name)}</div><div class="muted small">${count} card${count === 1 ? '' : 's'} · ${meta}</div></div>
+      ? `<input type="checkbox" class="check" data-change="pick" value="${theme.id}" ${selected.has(theme.id) ? 'checked' : ''} aria-label="Select ${esc(theme.name)}">`
+      : due + q.new ? `<a class="btn btn-small" href="#/review?start=${theme.id}">Review</a>` : '';
+    const toggle = kids
+      ? `<button type="button" class="expander ${expanded.has(theme.id) ? 'open' : ''}" data-action="expand" data-id="${theme.id}" aria-label="${expanded.has(theme.id) ? 'Hide' : 'Show'} sub-themes of ${esc(theme.name)}" aria-expanded="${expanded.has(theme.id)}">›</button>`
+      : sub ? '' : '<span class="expander-space"></span>';
+    return `<li class="theme-row ${sub ? 'sub' : ''}">
+      ${toggle}
+      <div class="grow"><div class="theme-name">${esc(theme.name)}</div><div class="muted small">${count} card${count === 1 ? '' : 's'}${kids ? ` · ${kids} sub-theme${kids === 1 ? '' : 's'}` : ''} · ${meta}</div></div>
       ${control}
     </li>`;
+  };
+
+  const themeRows = tree.map(({ theme, children }) => {
+    let html = row(theme, store.themeScope(theme.id), { kids: children.length });
+    if (children.length && expanded.has(theme.id)) html += children.map(c => row(c, [c.id], { sub: true })).join('');
+    return html;
   }).join('');
 
   const emptyState = !active.length ? `
@@ -87,13 +101,13 @@ export function homeView() {
         </a>
         ${anyDue ? '' : `<p class="muted center small">${esc(nextDueText())}</p>`}` : ''}
       ${todayPanel()}
-      ${themes.length ? `
+      ${tree.length ? `
         <section>
           <div class="section-head">
             <h2>Themes</h2>
             <button type="button" class="link" data-action="toggleSelect">${selecting ? 'Cancel' : 'Review several'}</button>
           </div>
-          <ul class="list">${themeRows}</ul>
+          <ul class="list themes">${themeRows}</ul>
           ${selecting ? `<button type="button" class="btn btn-block" data-action="reviewSelected" ${selected.size ? '' : 'disabled'}>Review ${selected.size || ''} selected</button>` : ''}
         </section>` : ''}
       ${!store.github ? `<p class="notice">This device isn't syncing. <a href="#/settings">Connect GitHub</a> to back up and use your cards on other devices.</p>` : ''}
@@ -103,6 +117,11 @@ export function homeView() {
     html,
     live: true,
     actions: {
+      expand(el) {
+        const id = el.dataset.id;
+        expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+        go('#/home');
+      },
       toggleSelect() {
         selecting = !selecting;
         selected.clear();

@@ -7,7 +7,7 @@ import { parseImport } from '../js/importer.js';
 import {
   makeScheduler, replayCard, computeStates, buildQueue, Session, promptIndex, previewRatings, Rating, State, DEFAULT_SETTINGS,
 } from '../js/scheduler.js';
-import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone } from '../js/model.js';
+import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone, themeTree, themeAndChildren, themeLabel, themePaths } from '../js/model.js';
 import { runSync, diffFiles, GitHubClient } from '../js/sync.js';
 import { gitBlobSha, utf8ToBase64, base64ToUtf8, dayStart, interleave } from '../js/util.js';
 
@@ -481,6 +481,60 @@ describe('Sync with GitHub (simulated)', () => {
     const res = await a.sync();
     eq(res.pushed, 0);
     eq(gh.pushes, pushes);
+  });
+});
+
+describe('Sub-themes', () => {
+  const themes = () => new Map([
+    ['es', { id: 'es', name: 'Spanish', created: 'a', updated: 'a' }],
+    ['verbs', { id: 'verbs', name: 'Verbs', parent: 'es', created: 'b', updated: 'b' }],
+    ['words', { id: 'words', name: '1000 beginner words', parent: 'es', created: 'c', updated: 'c' }],
+    ['sw', { id: 'sw', name: 'Software & coding', created: 'd', updated: 'd' }],
+    ['old', { id: 'old', name: 'Old', parent: 'es', deleted: true, created: 'e', updated: 'e' }],
+  ]);
+  test('tree: themes with their sub-themes, sorted by name', () => {
+    eq(themeTree(themes()).map(n => [n.theme.name, n.children.map(c => c.name)]),
+      [['Software & coding', []], ['Spanish', ['1000 beginner words', 'Verbs']]]);
+  });
+  test('a theme covers its sub-themes; a sub-theme covers only itself', () => {
+    eq(themeAndChildren(themes(), 'es').sort(), ['es', 'verbs', 'words']);
+    eq(themeAndChildren(themes(), 'verbs'), ['verbs']);
+  });
+  test('labels', () => {
+    eq(themeLabel(themes(), 'verbs'), 'Spanish › Verbs');
+    eq(themeLabel(themes(), 'es'), 'Spanish');
+  });
+  test('a sub-theme whose theme was deleted becomes a top-level theme', () => {
+    const t = themes();
+    t.set('es', { ...t.get('es'), deleted: true });
+    eq(themeTree(t).map(n => n.theme.name), ['1000 beginner words', 'Software & coding', 'Verbs']);
+  });
+  test('files go in sub-folders and come back intact', () => {
+    const d = makeData();
+    d.themes = themes();
+    const c1 = newCard({ theme: 'verbs', prompts: ['to eat?'], answer: 'comer', type: 'exact' }, { id: 'c1', now: 'n1' });
+    const c2 = newCard({ theme: 'es', prompts: ['hello?'], answer: 'hola' }, { id: 'c2', now: 'n2' });
+    d.cards.set('c1', c1).set('c2', c2);
+    d.entries.set('e1', { id: 'e1', title: 'Regular -er verbs', theme: 'verbs', added: 'x', created: 'n', updated: 'n', sources: [], builds_on: [], related: [], summary: 'S', questions: [] });
+    const files = toFiles(d);
+    ok(files.has('cards/spanish/verbs.json') && files.has('cards/spanish.json'), [...files.keys()].join(', '));
+    ok(files.has('library/spanish/verbs/regular-er-verbs.md'));
+    eq(JSON.parse(files.get('cards/spanish/verbs.json')).theme_name, 'Spanish › Verbs');
+    for (const p of files.keys()) ok(isManagedPath(p), `${p} should be managed`);
+    const back = fromFiles(files);
+    eq(back.errors, []);
+    eq(back.cards.sort((a, b) => (a.id < b.id ? -1 : 1)), [c1, c2]);
+    eq(back.themes.find(t => t.id === 'verbs').parent, 'es');
+    eq(back.entries[0].theme, 'verbs');
+  });
+  test('importing names a sub-theme (JSON field, "A / B", or a Subtheme: line)', () => {
+    eq(parseImport('{"theme":"Spanish","subtheme":"Verbs","cards":[{"q":"a","a":"b"}]}').subthemeName, 'Verbs');
+    const r = parseImport('{"theme":"Spanish / 1000 beginner words","cards":[{"q":"a","a":"b"}]}');
+    eq([r.themeName, r.subthemeName], ['Spanish', '1000 beginner words']);
+    const t = parseImport('Theme: Spanish\nSubtheme: Verbs\n\nQ: to eat?\nA: comer');
+    eq([t.themeName, t.subthemeName, t.cards.length], ['Spanish', 'Verbs', 1]);
+    eq(parseImport('Theme: Spanish > Verbs\nQ: a\nA: b').subthemeName, 'Verbs');
+    eq(parseImport('{"theme":"AI/ML","cards":[{"q":"a","a":"b"}]}').themeName, 'AI/ML');
   });
 });
 

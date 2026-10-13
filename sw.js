@@ -1,7 +1,7 @@
 // Keeps a copy of the app's files so it opens and works offline.
 // Bump VERSION whenever the app's files change, so phones fetch the new ones.
 
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const CACHE = `learning-tester-${VERSION}`;
 const FILES = [
   './',
@@ -34,7 +34,12 @@ const FILES = [
 const isLocal = ['localhost', '127.0.0.1'].includes(self.location.hostname);
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' makes sure an update fetches fresh files, not older copies the browser kept.
+  event.waitUntil(
+    caches.open(CACHE)
+      .then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', event => {

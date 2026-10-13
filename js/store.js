@@ -2,7 +2,10 @@
 // survives closing the app, and synced with GitHub when online.
 
 import { uid, nowISO, debounce, dayStart, utf8ToBase64 } from './util.js';
-import { cleanCard, newCard, tombstone, mergeInto, toFiles, fromFiles, isManagedPath, toBackup, FORMAT } from './model.js';
+import {
+  cleanCard, newCard, tombstone, mergeInto, toFiles, fromFiles, isManagedPath, toBackup, FORMAT,
+  themeTree, themeAndChildren, themeLabel, topThemeOf, isTopTheme,
+} from './model.js';
 import { DEFAULT_SETTINGS, makeScheduler, computeStates, replayCard, sortReviews } from './scheduler.js';
 import { GitHubClient, runSync } from './sync.js';
 import { DATA_README } from './texts.js';
@@ -120,8 +123,27 @@ class Store extends EventTarget {
     return [...this.cards.values()].filter(c => !c.deleted);
   }
 
+  // "Spanish" or "Spanish › Verbs"
   themeName(id) {
-    return this.themes.get(id)?.name ?? 'No theme';
+    return themeLabel(this.themes, id);
+  }
+
+  themeTree() {
+    return themeTree(this.themes);
+  }
+
+  // A theme plus its sub-themes.
+  themeScope(id) {
+    return themeAndChildren(this.themes, id);
+  }
+
+  topThemeOf(id) {
+    return topThemeOf(this.themes, id);
+  }
+
+  isTopTheme(id) {
+    const t = this.themes.get(id);
+    return !!t && isTopTheme(this.themes, t);
   }
 
   cardState(id) {
@@ -135,12 +157,15 @@ class Store extends EventTarget {
 
   // ---------- Themes ----------
 
-  async addTheme(name) {
+  // parent: a top-level theme's id to make a sub-theme (only one level is allowed).
+  async addTheme(name, parent = null) {
     const clean = name.trim();
-    const existing = this.liveThemes().find(t => t.name.toLowerCase() === clean.toLowerCase());
+    if (parent && !this.isTopTheme(parent)) parent = this.topThemeOf(parent);
+    const existing = this.liveThemes().find(t =>
+      t.name.toLowerCase() === clean.toLowerCase() && (parent ? t.parent === parent : this.isTopTheme(t.id)));
     if (existing) return existing;
     const now = nowISO();
-    const t = { id: uid('t'), name: clean, created: now, updated: now };
+    const t = { id: uid('t'), name: clean, parent: parent || null, created: now, updated: now };
     this.themes.set(t.id, t);
     await this.put('themes', [t]);
     await this.changed();
@@ -158,8 +183,13 @@ class Store extends EventTarget {
     return this.liveCards().some(c => c.theme === id) || [...this.entries.values()].some(e => e.theme === id && !e.deleted);
   }
 
+  hasSubThemes(id) {
+    return this.themeScope(id).length > 1;
+  }
+
   async deleteTheme(id) {
     if (this.themeInUse(id)) throw new Error('Move or remove the cards in this theme first.');
+    if (this.hasSubThemes(id)) throw new Error('Delete or move its sub-themes first.');
     const t = { ...this.themes.get(id), deleted: true, updated: nowISO() };
     this.themes.set(id, t);
     await this.put('themes', [t]);
@@ -185,6 +215,16 @@ class Store extends EventTarget {
     if (!this.states.has(id)) this.states.set(id, replayCard(c, this.reviewsByCard.get(id) ?? [], this.f));
     await this.changed();
     return c;
+  }
+
+  // Change several cards at once (e.g. move to a sub-theme), with one save.
+  async updateCards(ids, fields) {
+    const now = nowISO();
+    const changed = ids.map(id => cleanCard({ ...this.cards.get(id), ...fields, id, updated: now }));
+    changed.forEach(c => this.cards.set(c.id, c));
+    await this.put('cards', changed);
+    await this.changed();
+    return changed;
   }
 
   archiveCard(id) {
@@ -332,8 +372,13 @@ class Store extends EventTarget {
           desired: remoteFiles => {
             const files = toFiles(this.dataSnapshot());
             const readme = remoteFiles.get('README.md')?.text ?? '';
-            if (!readme.includes('learning-tester:data-readme')) files.set('README.md', DATA_README);
-            if (!remoteFiles.has('coach/INSTRUCTIONS.md') && this.coachText) files.set('coach/INSTRUCTIONS.md', this.coachText);
+            if (!readme.includes('learning-tester:data-readme v2')) files.set('README.md', DATA_README);
+            // Add the coach instructions, or update them when the app has a newer version.
+            const coachVersion = t => Number(t?.match(/learning-tester:coach v(\d+)/)?.[1] ?? 0);
+            const remoteCoach = remoteFiles.get('coach/INSTRUCTIONS.md')?.text;
+            if (this.coachText && (!remoteCoach || coachVersion(remoteCoach) < coachVersion(this.coachText))) {
+              files.set('coach/INSTRUCTIONS.md', this.coachText);
+            }
             return files;
           },
           initialReadme: DATA_README,

@@ -50,13 +50,21 @@ function normalizeEntry(raw) {
   };
 }
 
+// "Spanish / Verbs", "Spanish > Verbs" or "Spanish › Verbs" name a theme and sub-theme.
+function splitTheme(out, theme, subtheme = '') {
+  // A slash only separates when it has spaces around it, so "AI/ML" stays one name.
+  const parts = str(theme).split(/\s+\/\s+|\s*[›>]\s*/).filter(Boolean);
+  out.themeName = parts[0] ?? '';
+  out.subthemeName = str(subtheme) || parts.slice(1).join(' ') || '';
+}
+
 function parseJson(data) {
-  const out = { format: 'json', themeName: '', entry: null, cards: [], warnings: [] };
+  const out = { format: 'json', themeName: '', subthemeName: '', entry: null, cards: [], warnings: [] };
   let rawCards;
   if (Array.isArray(data)) {
     rawCards = data;
   } else {
-    out.themeName = str(data.theme);
+    splitTheme(out, data.theme, data.subtheme ?? data.sub_theme ?? data.subTheme);
     out.entry = normalizeEntry(data.entry);
     rawCards = asArray(data.cards);
     if (data.entry && !out.entry) out.warnings.push('The entry was skipped because it has no title.');
@@ -72,10 +80,10 @@ function parseJson(data) {
 }
 
 // Labels may be bold (**Q:**), numbered (Q1:), or bulleted (- Q:).
-const LABEL = /^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*(q|question|a|answer|source|s|unverified|type|accept|also|tags|theme)\s*\d*\s*(?:\*\*|__)?\s*[:.)]\s*(?:\*\*|__)?\s?(.*)$/i;
+const LABEL = /^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*(q|question|a|answer|source|s|unverified|type|accept|also|tags|theme|sub-?theme|sub_theme)\s*\d*\s*(?:\*\*|__)?\s*[:.)]\s*(?:\*\*|__)?\s?(.*)$/i;
 
 function parseText(text) {
-  const out = { format: 'text', themeName: '', entry: null, cards: [], warnings: [] };
+  const out = { format: 'text', themeName: '', subthemeName: '', entry: null, cards: [], warnings: [] };
   let card = null;
   let field = null;
 
@@ -98,7 +106,11 @@ function parseText(text) {
       const key = m[1].toLowerCase();
       const value = m[2].trim();
       if (key === 'theme') {
-        if (!card) out.themeName = value;
+        if (!card) splitTheme(out, value, out.subthemeName);
+        continue;
+      }
+      if (key.startsWith('sub')) {
+        if (!card) out.subthemeName = value;
         continue;
       }
       if (key === 'q' || key === 'question') {

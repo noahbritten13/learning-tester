@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS } from '../scheduler.js';
 import { formatRelative } from '../util.js';
 import { esc, header, go, render, toast, syncPill, downloadOrShare, readFile } from '../ui.js';
 
-export const APP_VERSION = '1.0.0 (phase 1)';
+export const APP_VERSION = '1.1.0 (phase 1 + sub-themes)';
 const FSRS_VERSION = 'ts-fsrs 5.4.2';
 
 function guessDeviceName() {
@@ -85,7 +85,16 @@ export function settingsView() {
   const s = store.settings;
   const gh = store.github;
   const sync = store.syncState;
-  const themes = store.liveThemes();
+  const tree = store.themeTree();
+  const themeRow = (t, sub = false) => `
+    <li class="theme-row admin ${sub ? 'sub' : ''}">
+      <div class="theme-name">${esc(t.name)}</div>
+      <div class="row tight">
+        ${sub ? '' : `<button type="button" class="link" data-action="addSubTheme" data-id="${t.id}">+ Sub-theme</button>`}
+        <button type="button" class="link" data-action="renameTheme" data-id="${t.id}">Rename</button>
+        <button type="button" class="link danger" data-action="deleteTheme" data-id="${t.id}">Delete</button>
+      </div>
+    </li>`;
   const archived = store.liveCards().filter(c => c.status === 'archived').length;
 
   const syncSection = gh
@@ -126,12 +135,7 @@ export function settingsView() {
 
         <section class="card-section">
           <h2>Themes</h2>
-          ${themes.length ? `<ul class="list">${themes.map(t => `
-            <li class="theme-row">
-              <div class="theme-name">${esc(t.name)}</div>
-              <div class="row"><button type="button" class="link" data-action="renameTheme" data-id="${t.id}">Rename</button>
-              <button type="button" class="link danger" data-action="deleteTheme" data-id="${t.id}">Delete</button></div>
-            </li>`).join('')}</ul>` : '<p class="muted">No themes yet.</p>'}
+          ${tree.length ? `<ul class="list themes">${tree.map(({ theme, children }) => themeRow(theme) + children.map(c => themeRow(c, true)).join('')).join('')}</ul>` : '<p class="muted">No themes yet.</p>'}
           <form class="row" data-submit="addTheme"><input name="name" placeholder="New theme" class="grow"><button type="submit" class="btn btn-secondary">Add</button></form>
         </section>
 
@@ -207,6 +211,13 @@ export function settingsView() {
         await store.addTheme(name);
         render();
       },
+      async addSubTheme(el) {
+        const parent = store.themes.get(el.dataset.id);
+        const name = prompt(`Name of the new sub-theme of “${parent.name}”`);
+        if (!name?.trim()) return;
+        await store.addTheme(name, parent.id);
+        render();
+      },
       async renameTheme(el) {
         const t = store.themes.get(el.dataset.id);
         const name = prompt('New name for this theme', t.name);
@@ -216,7 +227,8 @@ export function settingsView() {
       },
       async deleteTheme(el) {
         const t = store.themes.get(el.dataset.id);
-        if (store.themeInUse(t.id)) return toast('This theme still has cards. Move them to another theme first.');
+        if (store.themeInUse(t.id)) return toast('This theme still has cards. Move them first (Cards → Select).');
+        if (store.hasSubThemes(t.id)) return toast('Delete its sub-themes first.');
         if (!confirm(`Delete the theme “${t.name}”?`)) return;
         await store.deleteTheme(t.id);
         render();

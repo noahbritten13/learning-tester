@@ -11,6 +11,8 @@ let waitTimer = null;
 
 function start(themeIds) {
   store.refreshIfNewDay();
+  // Reviewing a theme includes its sub-themes.
+  if (themeIds) themeIds = [...new Set(themeIds.flatMap(id => store.themeScope(id)))];
   const q = buildQueue({ cards: store.liveCards(), states: store.states, settings: store.settings, themeIds });
   rv = { session: new Session(q.ids, { later: q.later }), themeIds, current: null, ms: 0, started: q.ids.length + q.later.length > 0 };
   advance();

@@ -1,6 +1,6 @@
 // Longer fixed texts.
 
-export const DATA_README = `<!-- learning-tester:data-readme v1 -->
+export const DATA_README = `<!-- learning-tester:data-readme v2 -->
 # Learning Tester data
 
 This private repository holds the data for Learning Tester, a personal
@@ -11,10 +11,10 @@ them yourself, or give them to any AI or tool. Everything is plain text.
 
 | Path | What it holds |
 |---|---|
-| \`themes.json\` | Themes, e.g. "Software & coding". |
+| \`themes.json\` | Themes, e.g. "Spanish", and sub-themes, e.g. "Verbs" (a sub-theme has \`parent\`: its theme's id). |
 | \`settings.json\` | Scheduling settings (desired retention, daily limits, ...). |
-| \`cards/<theme>.json\` | The cards in each theme. \`cards/_deleted.json\` lists permanently deleted cards so they don't come back from another device. |
-| \`library/<theme>/<entry>.md\` | Library entries: what you learnt, in your own words, with sources. |
+| \`cards/<theme>.json\`, \`cards/<theme>/<sub-theme>.json\` | The cards in each theme and sub-theme. \`cards/_deleted.json\` lists permanently deleted cards so they don't come back from another device. |
+| \`library/<theme>/[<sub-theme>/]<entry>.md\` | Library entries: what you learnt, in your own words, with sources. |
 | \`reviews/<device>/<YYYY-MM>.jsonl\` | Review history, one JSON object per line. Each device writes only its own files. |
 | \`coach/INSTRUCTIONS.md\` | Instructions for an AI learning coach (paste into a claude.ai Project, ChatGPT, etc.). |
 
