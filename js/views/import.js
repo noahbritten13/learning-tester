@@ -82,6 +82,7 @@ function itemHtml(item) {
         : `<label class="check-row"><input type="checkbox" data-change="itemExact" data-key="${item.key}" ${c.type === 'exact' ? 'checked' : ''}> Marked automatically (short exact answer)</label>`}
       <label class="check-row"><input type="checkbox" data-change="itemUnverified" data-key="${item.key}" ${c.unverified ? 'checked' : ''}> Unverified</label>
       <label>Source<input data-input="itemSource" data-key="${item.key}" value="${esc(c.source)}"></label>
+      <label>Sub-themes <span class="muted">(comma separated; leave empty to use the import's)</span><input data-input="itemSubthemes" data-key="${item.key}" value="${esc((c.subthemes ?? []).join(', '))}"></label>
       ${errors.length ? `<div class="errors">${errors.map(esc).join('<br>')}</div>` : ''}
       <div class="row"><button type="button" class="btn btn-small" data-action="doneEdit" data-key="${item.key}">Done</button>
       <button type="button" class="btn btn-small btn-secondary" data-action="discard" data-key="${item.key}">Discard</button></div>
@@ -97,6 +98,7 @@ function itemHtml(item) {
            ${c.linkNames?.related.length ? `<div class="muted small">Related: ${c.linkNames.related.map(esc).join(', ')}</div>` : ''}`
         : `${c.prompts.map((p, i) => `<div class="card-q ${i ? 'alt' : ''}">${i ? '<span class="muted small">or: </span>' : ''}${multiline(p)}</div>`).join('')}
       <div class="card-a">${multiline(c.answer)}</div>`}
+      ${c.subthemes?.length ? `<div class="muted small">Sub-themes: ${c.subthemes.map(esc).join(', ')}</div>` : ''}
       <div class="muted small">${[c.type === 'exact' ? 'Marked automatically' : c.type === 'word' ? 'Language word, tested both ways' : '', c.source ? `Source: ${esc(c.source)}` : '', c.unverified ? '<span class="warn-text">Unverified</span>' : ''].filter(Boolean).join(' · ')}</div>
       ${hints.length ? `<ul class="hint-list">${hints.map(h => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
       <button type="button" class="link small" data-action="edit" data-key="${item.key}">Edit</button>
@@ -117,7 +119,7 @@ A: Ask another program for data or actions, following agreed rules.
 Theme: Spanish / Verbs
 esconder = to hide; opposite: encontrar
 tener = to have; note: e→ie, irregular 1st person</pre>
-      <p class="muted small">Several Q: lines before one A: are alternative wordings of the same card. Lines like <code>word = meaning</code> make language words, tested both ways. <a href="#/coach">Instructions for Claude</a></p>
+      <p class="muted small">Several Q: lines before one A: are alternative wordings of the same card. Lines like <code>word = meaning</code> make language words, tested both ways. A card can have its own sub-themes: <code>; subthemes: Verbs, Irregular</code> on a word line, or a <code>Subthemes:</code> line in a Q/A card. <a href="#/coach">Instructions for Claude</a></p>
       <textarea class="paste" rows="10" data-input="text" placeholder="Paste here">${esc(st.text)}</textarea>
       ${err ? `<div class="errors">${esc(err)}</div>` : ''}
       <div class="row">
@@ -155,6 +157,7 @@ function previewHtml() {
       ${warnings.map(w => `<p class="notice">${esc(w)}</p>`).join('')}
       ${themePicker(st)}
       ${st.parsed.extraSubs?.length ? `<p class="muted small">Also added to: ${st.parsed.extraSubs.map(esc).join(', ')}</p>` : ''}
+      ${st.items.some(i => i.card.subthemes?.length) ? `<p class="muted small">Cards that list their own sub-themes go only into those, within this theme.</p>` : ''}
 
       ${st.entry ? `<section class="entry-preview">
         <label class="check-row"><input type="checkbox" data-change="keepEntry" ${st.keepEntry ? 'checked' : ''}> Save this library entry</label>
@@ -216,6 +219,7 @@ export function importView(params) {
       itemAnswer(el) { find(el).card.answer = el.value; },
       itemSource(el) { find(el).card.source = el.value; },
       itemNote(el) { find(el).card.note = el.value; },
+      itemSubthemes(el) { find(el).card.subthemes = el.value.split(',').map(x => x.trim()).filter(Boolean); },
     },
     changes: {
       async file(el) {
@@ -255,7 +259,7 @@ export function importView(params) {
           key,
           include: false,
           editing: true,
-          card: { prompts: [], answer: '', type: 'concept', accept: [], author: 'me', source: '', unverified: false, tags: [] },
+          card: { prompts: [], answer: '', type: 'concept', subthemes: [], accept: [], author: 'me', source: '', unverified: false, tags: [] },
         });
         render();
         document.querySelector(`textarea[data-key="${key}"]`)?.focus();
@@ -277,19 +281,31 @@ export function importView(params) {
         const themeError = pickerError(st);
         if (themeError) return toast(themeError);
         const theme = await resolvePick(st);
+        const top = store.topThemeOf(theme);
         // Extra sub-themes the import names (only when the cards go into a sub-theme).
         const also = [];
         if (!store.isTopTheme(theme)) {
-          for (const name of st.parsed.extraSubs ?? []) also.push((await store.addTheme(name, store.topThemeOf(theme))).id);
+          for (const name of st.parsed.extraSubs ?? []) also.push((await store.addTheme(name, top)).id);
         }
         let entry = null;
         if (st.entry && st.keepEntry) entry = await store.addEntry({ ...st.entry, theme });
-        const cards = await store.addCards(items.map(i => {
-          const { linkNames, ...fields } = i.card;
-          return { ...fields, theme, also_in: also, entry: entry?.id ?? null };
+        // A card that lists its own sub-themes goes into exactly those (the first is its main one),
+        // created under the import's theme if they're new.
+        const places = [];
+        for (const i of items) {
+          const ids = [];
+          for (const name of i.card.subthemes ?? []) ids.push((await store.addTheme(name, top)).id);
+          places.push(ids.length ? { theme: ids[0], also_in: ids.slice(1) } : { theme, also_in: also });
+        }
+        const cards = await store.addCards(items.map((i, n) => {
+          const { linkNames, subthemes, ...fields } = i.card;
+          return { ...fields, ...places[n], entry: entry?.id ?? null };
         }));
         const missing = await linkByName(cards.map((card, n) => ({ card, names: items[n].card.linkNames ?? {} })), theme);
-        st.saved = { count: items.length, theme, themeName: store.themeName(theme), entry: entry?.title, missing };
+        // If cards went to different sub-themes, "Review them now" covers the whole theme.
+        const mixed = places.some(p => p.theme !== places[0].theme);
+        const shown = mixed ? top : places[0].theme;
+        st.saved = { count: items.length, theme: shown, themeName: store.themeName(shown), entry: entry?.title, missing };
         st.step = 'saved';
         st.text = '';
         render();

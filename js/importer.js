@@ -37,6 +37,8 @@ export function normalizeCard(raw) {
     note: str(raw.note ?? raw.notes ?? raw.grammar),
     // Linked words by name; turned into links when the cards are saved.
     linkNames: { opposite: nameList(raw.opposites ?? raw.opposite), related: nameList(raw.related) },
+    // This card's own sub-themes (by name). Empty: the import's sub-themes.
+    subthemes: nameList(raw.subthemes ?? raw.subtheme ?? raw.sub_themes ?? raw.subTheme),
     accept: strList(raw.accept ?? raw.alternatives ?? raw.also),
     author,
     source: str(raw.source),
@@ -73,23 +75,24 @@ function setSubs(out, text) {
   out.extraSubs = subs.slice(1);
 }
 
-// A word line: "esconder = to hide; note: …; opposite: encontrar, mostrar; related: buscar"
+// A word line: "esconder = to hide; note: …; opposite: encontrar, mostrar; related: buscar; subthemes: Verbs, Irregular"
 const WORD_LINE = /^\s*(?:[-*•]\s*)?([^=:]+?)\s+=\s+(.+)$/;
 
 export function parseWordLine(line) {
   const m = line.match(WORD_LINE);
   if (!m) return null;
-  const [meaning, ...extras] = m[2].split(/;\s*(?=(?:note|notes|opposites?|related)\s*:)/i);
+  const [meaning, ...extras] = m[2].split(/;\s*(?=(?:note|notes|opposites?|related|sub-?themes?|sub_themes?)\s*:)/i);
   const card = {
     prompts: [m[1].trim()], answer: meaning.trim().replace(/;$/, ''), type: 'word', note: '', linkNames: { opposite: [], related: [] },
-    accept: [], author: 'me', source: '', unverified: false, tags: [],
+    subthemes: [], accept: [], author: 'me', source: '', unverified: false, tags: [],
   };
   for (const extra of extras) {
-    const kv = extra.match(/^(note|notes|opposites?|related)\s*:\s*(.*)$/i);
+    const kv = extra.match(/^(note|notes|opposites?|related|sub-?themes?|sub_themes?)\s*:\s*(.*)$/i);
     if (!kv) continue;
     const key = kv[1].toLowerCase();
     const value = kv[2].trim().replace(/;$/, '');
     if (key.startsWith('note')) card.note = value;
+    else if (key.startsWith('sub')) card.subthemes = nameList(value);
     else card.linkNames[key.startsWith('opposite') ? 'opposite' : 'related'].push(...nameList(value));
   }
   return card;
@@ -133,7 +136,7 @@ function parseText(text) {
     field = null;
   };
   const fresh = () => ({
-    prompts: [], answer: '', type: 'concept', note: '', linkNames: { opposite: [], related: [] }, accept: [], author: 'me', source: '', unverified: false, tags: [],
+    prompts: [], answer: '', type: 'concept', note: '', linkNames: { opposite: [], related: [] }, subthemes: [], accept: [], author: 'me', source: '', unverified: false, tags: [],
   });
 
   for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
@@ -147,7 +150,11 @@ function parseText(text) {
         continue;
       }
       if (key.startsWith('sub')) {
-        if (!card) setSubs(out, value);
+        // Inside a card (or straight after a word line): that card's own sub-themes.
+        // Before any card: the sub-themes for the whole import.
+        const target = card ?? out.cards[out.cards.length - 1];
+        if (target) target.subthemes = nameList(value);
+        else setSubs(out, value);
         continue;
       }
       if (key === 'q' || key === 'question') {

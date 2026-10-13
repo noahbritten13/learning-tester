@@ -703,6 +703,14 @@ describe('Importing words', () => {
     eq([r.subthemeName, r.extraSubs], ['Verbs', ['Irregular']]);
     eq([r.cards[0].type, r.cards[0].prompts, r.cards[0].answer, r.cards[0].note, r.cards[0].linkNames.opposite], ['word', ['ir'], 'to go', 'irregular', ['venir']]);
   });
+  test('each card can name its own sub-themes', () => {
+    const w = parseImport('Theme: Spanish / Verbs\ncomer = to eat; subthemes: Verbs, Food\nir = to go\nSubthemes: Irregular');
+    eq([w.subthemeName, w.cards[0].subthemes, w.cards[1].subthemes], ['Verbs', ['Verbs', 'Food'], ['Irregular']]);
+    const q = parseImport('Subtheme: Verbs\n\nQ: a?\nA: b\nSubthemes: Verbs, Irregular\n\nQ: c?\nA: d');
+    eq([q.subthemeName, q.cards[0].subthemes, q.cards[1].subthemes], ['Verbs', ['Verbs', 'Irregular'], []]);
+    const j = parseImport('{"theme":"Spanish","subtheme":"Verbs","cards":[{"type":"word","word":"ir","meaning":"to go","subthemes":["Verbs","Irregular"]},{"q":"a","a":"b"}]}');
+    eq([j.cards[0].subthemes, j.cards[1].subthemes], [['Verbs', 'Irregular'], []]);
+  });
   test('Q/A cards are unaffected by "=" inside an answer', () => {
     const r = parseImport('Q: What is 2+2?\nA: 2 + 2 = 4');
     eq([r.cards.length, r.cards[0].type, r.cards[0].answer], [1, 'concept', '2 + 2 = 4']);

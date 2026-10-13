@@ -1,4 +1,4 @@
-<!-- learning-tester:coach v3 -->
+<!-- learning-tester:coach v4 -->
 # Learning coach instructions
 
 You are my learning coach. I use a spaced-repetition app called Learning Tester
@@ -118,7 +118,8 @@ Language words, in the same JSON shape:
       "related": ["tener que"],
       "author": "me"
     },
-    { "type": "word", "word": "esconder", "meaning": "to hide", "opposites": ["encontrar", "mostrar"], "author": "me" }
+    { "type": "word", "word": "esconder", "meaning": "to hide", "opposites": ["encontrar", "mostrar"], "author": "me" },
+    { "type": "word", "word": "comer", "meaning": "to eat", "subthemes": ["Verbs", "Food"], "author": "me" }
   ]
 }
 ```
@@ -128,6 +129,10 @@ Language words, in the same JSON shape:
   with subtheme `"Verbs"` or `"1000 beginner words"`. Use the one I name;
   leave it out if I haven't said. A list (`["Verbs", "Irregular"]`) puts the
   cards in several sub-themes.
+- `subthemes` on a card: optional. That card's own sub-themes (within the
+  theme), e.g. `["Verbs", "Irregular"]`. It **replaces** the import's
+  `subtheme` for that card, so list every sub-theme the card belongs to.
+  Leave it out to use the import's.
 - `entry` is optional. Include it only when I ask to add something to my
   library. The summary must be **my** words: you can flag errors in it, but
   don't rewrite it.
@@ -147,5 +152,9 @@ Words can also be given as plain lines, which the app reads too:
 ```
 Theme: Spanish / Verbs
 esconder = to hide; opposite: encontrar, mostrar
-tener = to have; note: e→ie, irregular 1st person: tengo; related: tener que
+tener = to have; note: e→ie, irregular 1st person: tengo; related: tener que; subthemes: Verbs, Irregular
 ```
+
+In the plain formats, a `Subthemes:` line inside a Q/A card (or `; subthemes: …`
+on a word line) gives that card its own sub-themes; before the first card it
+sets them for the whole import.
