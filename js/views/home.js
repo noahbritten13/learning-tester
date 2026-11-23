@@ -25,13 +25,14 @@ export function todayStats() {
 
 export function todayPanel() {
   const t = todayStats();
-  if (!t.reviews) return `<section class="today"><h2>Today</h2><p class="muted">No reviews yet today.</p></section>`;
+  const head = `<div class="section-head"><h2>Today</h2><a class="link small" href="#/sessions">Past sessions</a></div>`;
+  if (!t.reviews) return `<section class="today">${head}<p class="muted">No reviews yet today.</p></section>`;
   const themes = [...t.byTheme]
     .sort((a, b) => b[1] - a[1])
     .map(([id, n]) => `<span class="chip">${esc(store.themeName(id))} · ${n}</span>`)
     .join('');
   return `<section class="today">
-    <h2>Today</h2>
+    ${head}
     <p class="today-stats"><strong>${t.reviews}</strong> review${t.reviews === 1 ? '' : 's'} · <strong>${formatDuration(t.ms)}</strong>${t.cards !== t.reviews ? ` · ${t.cards} cards` : ''}</p>
     <div class="chips">${themes}</div>
   </section>`;

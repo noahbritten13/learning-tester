@@ -435,7 +435,7 @@ class Store extends EventTarget {
 
   // kind: 'review' (normal) or 'followup' (a linked-word check).
   // dir: 'rev' when a word card was asked meaning → word.
-  async addReview({ card, rating, ms, prompt, kind = 'review', dir = 'fwd' }) {
+  async addReview({ card, rating, ms, prompt, kind = 'review', dir = 'fwd', session = null }) {
     const ts = nowISO();
     const r = {
       id: `${this.device.id}-${Date.now().toString(36)}-${uid('r').slice(2, 6)}`,
@@ -446,6 +446,7 @@ class Store extends EventTarget {
       ms: Math.max(0, Math.round(ms)),
       prompt,
       ...(dir === 'rev' ? { dir: 'rev' } : {}),
+      ...(session ? { session } : {}),
       device: this.device.id,
     };
     const key = schedKey(card, dir);
@@ -540,7 +541,7 @@ class Store extends EventTarget {
           desired: remoteFiles => {
             const files = toFiles(this.dataSnapshot());
             const readme = remoteFiles.get('README.md')?.text ?? '';
-            if (!readme.includes('learning-tester:data-readme v3')) files.set('README.md', DATA_README);
+            if (!readme.includes('learning-tester:data-readme v4')) files.set('README.md', DATA_README);
             // Add the coach instructions, or update them when the app has a newer version.
             const coachVersion = t => Number(t?.match(/learning-tester:coach v(\d+)/)?.[1] ?? 0);
             const remoteCoach = remoteFiles.get('coach/INSTRUCTIONS.md')?.text;

@@ -10,6 +10,8 @@ import {
 } from '../js/scheduler.js';
 import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone, themeTree, themeAndChildren, themeLabel, themePaths, inThemes, themeLanguage } from '../js/model.js';
 import { runSync, diffFiles, GitHubClient } from '../js/sync.js';
+import { DATA_README } from '../js/texts.js';
+import { newSessionId, listSessions, summariseSession, recentMistakes, periodStart, deviceLabel } from '../js/sessions.js';
 import { gitBlobSha, utf8ToBase64, base64ToUtf8, dayStart, interleave } from '../js/util.js';
 
 const results = [];
@@ -739,6 +741,110 @@ describe('Progress bar counts (spec 01)', () => {
     eq(counts(w, revDue, due, { dirOf: () => 'mixed' }).waiting, 1);
     eq(counts(w, revDue, due, { dirOf: () => 'fwd' }).unseen, 1, 'fwd mode only looks at word → meaning');
     eq(counts(w, revDue, due, { dirOf: () => 'rev' }).waiting, 1);
+  });
+});
+
+describe('Session records (spec 02)', () => {
+  // A review line at a given time, in a session.
+  const line = (cardId, ts, rating, extra = {}) => ({ id: `r-${cardId}-${ts}-${rating}`, card: cardId, ts, rating, kind: 'review', ms: 1000, prompt: 0, device: 'iphone-ab12', ...extra });
+  const S = 'iphone-ab12-s-aaaa';
+  test('each session gets its own id, starting with the device id', () => {
+    const a = newSessionId('iphone-ab12'), b = newSessionId('iphone-ab12');
+    ok(a.startsWith('iphone-ab12-s-') && a !== b, `${a} ${b}`);
+    eq(deviceLabel('iphone-ab12'), 'iphone');
+  });
+  test('a card shown twice counts once; both directions of a word count as one card', () => {
+    const sum = summariseSession([
+      line('c1', '2026-11-24T10:00:00Z', 1, { session: S }),
+      line('c1', '2026-11-24T10:05:00Z', 3, { session: S }),
+      line('w1', '2026-11-24T10:01:00Z', 3, { session: S }),
+      line('w1', '2026-11-24T10:02:00Z', 3, { session: S, dir: 'rev' }),
+    ]);
+    eq(sum.cards, 2);
+  });
+  test('Again then Good in the same session is in the got-wrong list; Good first is not', () => {
+    const sum = summariseSession([
+      line('c2', '2026-11-24T10:05:00Z', 3, { session: S }),
+      line('c1', '2026-11-24T10:00:00Z', 1, { session: S }),
+      line('c1', '2026-11-24T10:10:00Z', 3, { session: S }),
+      line('c2', '2026-11-24T10:20:00Z', 1, { session: S }),
+    ]);
+    eq(sum.wrong.map(w => w.card), ['c1']);
+    eq([sum.rightFirstTime, sum.wrongCards], [1, 1]);
+  });
+  test('word cards: the got-wrong entry keeps the direction', () => {
+    const sum = summariseSession([line('w1', '2026-11-24T10:00:00Z', 1, { session: S, dir: 'rev' })]);
+    eq(sum.wrong, [{ card: 'w1', key: 'w1@r', prompt: 0, dir: 'rev' }]);
+  });
+  test('missed linked-word checks are listed separately, not as wrong cards', () => {
+    const sum = summariseSession([
+      line('c1', '2026-11-24T10:00:00Z', 3, { session: S }),
+      line('c9', '2026-11-24T10:01:00Z', 1, { session: S, kind: 'followup' }),
+      line('c8', '2026-11-24T10:02:00Z', 3, { session: S, kind: 'followup' }),
+    ]);
+    eq([sum.cards, sum.wrong.length, sum.followupsWrong.map(f => f.card)], [1, 0, ['c9']]);
+  });
+  test('time is the sum of the time on each review', () => {
+    const sum = summariseSession([
+      line('c1', '2026-11-24T10:00:00Z', 3, { session: S, ms: 4000 }),
+      line('c2', '2026-11-24T10:30:00Z', 3, { session: S, ms: 6000 }),
+      line('c3', '2026-11-24T10:31:00Z', 1, { session: S, ms: 2000, kind: 'followup' }),
+    ]);
+    eq(sum.ms, 12000);
+  });
+  test('reviews from before this feature (no session) are left out of the history', () => {
+    const list = listSessions([line('c1', '2026-11-20T10:00:00Z', 3), line('c2', '2026-11-24T10:00:00Z', 3, { session: S })]);
+    eq(list.map(s => s.id), [S]);
+  });
+  test('sessions from two devices are listed separately, newest first', () => {
+    const mac = 'mac-gb83-s-bbbb';
+    const list = listSessions([
+      line('c1', '2026-11-24T09:00:00Z', 3, { session: S }),
+      line('c2', '2026-11-24T11:00:00Z', 3, { session: mac, device: 'mac-gb83' }),
+      line('c3', '2026-11-24T09:05:00Z', 3, { session: S }),
+    ]);
+    eq(list.map(s => [s.id, s.device, s.reviews.length]), [[mac, 'mac-gb83', 1], [S, 'iphone-ab12', 2]]);
+    eq([list[1].start, list[1].end], ['2026-11-24T09:00:00Z', '2026-11-24T09:05:00Z']);
+  });
+  test('the data README explains the session field', () => {
+    ok(DATA_README.includes('`session`') && DATA_README.includes('data-readme v4'));
+  });
+  test('practice never saves a review', async () => {
+    const src = await (await fetch('../js/views/practice.js', { cache: 'reload' })).text();
+    ok(!/addReview\s*\(/.test(src), 'practice.js must not call store.addReview()');
+  });
+  test('"last 7 days" starts at 4 am, 6 days before today', () => {
+    const now = new Date('2026-11-24T15:00:00');
+    eq(periodStart(7, now).getTime(), new Date('2026-11-18T04:00:00').getTime());
+    eq(periodStart(1, new Date('2026-11-24T02:00:00')).getTime(), new Date('2026-11-23T04:00:00').getTime());
+  });
+  test('recent mistakes: 3 days ago in both lists, 10 days ago only in 30, 40 days ago in neither', () => {
+    const now = new Date('2026-11-24T15:00:00');
+    const ago = d => new Date(now.getTime() - d * 86400000).toISOString();
+    const cards = new Map(['a', 'b', 'c', 'd', 'arch', 'gone'].map(id => [id, card(id)]));
+    cards.set('arch', card('arch', { status: 'archived' }));
+    cards.set('gone', { id: 'gone', deleted: true });
+    const reviews = [
+      line('a', ago(3), 1), // no session field: older reviews still count
+      line('b', ago(10), 1, { session: S }),
+      line('c', ago(40), 1),
+      line('d', ago(1), 3),
+      line('arch', ago(1), 1),
+      line('gone', ago(1), 1),
+    ];
+    eq(recentMistakes(reviews, cards, { days: 7, now }).map(m => m.card), ['a']);
+    eq(recentMistakes(reviews, cards, { days: 30, now }).map(m => m.card).sort(), ['a', 'b']);
+  });
+  test('recent mistakes: word cards list only the direction(s) got wrong, and count each miss', () => {
+    const now = new Date('2026-11-24T15:00:00');
+    const cards = new Map([['w1', card('w1', { type: 'word', prompts: ['tener'], answer: 'to have' })]]);
+    const reviews = [
+      line('w1', '2026-11-23T10:00:00Z', 1, { dir: 'rev' }),
+      line('w1', '2026-11-23T10:10:00Z', 1, { dir: 'rev' }),
+      line('w1', '2026-11-23T10:20:00Z', 3),
+      line('w1', '2026-11-22T10:00:00Z', 1, { kind: 'followup', dir: 'rev' }),
+    ];
+    eq(recentMistakes(reviews, cards, { days: 7, now }), [{ key: 'w1@r', card: 'w1', dir: 'rev', misses: 3 }]);
   });
 });
 

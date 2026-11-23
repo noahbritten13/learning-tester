@@ -423,7 +423,9 @@ export function cardEditView(params, rest, name) {
   if (!draft || draft.id !== (id ?? null) || params.fresh) draft = existing ? draftFromCard(existing) : blankDraft(params);
   if (params.fresh) history.replaceState(null, '', location.hash.replace(/[?&]fresh=1/, ''));
   const d = draft;
-  const back = params.from === 'review' ? '#/review' : id ? '#/cards' : '#/home';
+  const back = params.from === 'review' ? '#/review'
+    : params.from === 'sessions' ? `#/sessions${params.s ? `/${encodeURIComponent(params.s)}` : ''}`
+    : id ? '#/cards' : '#/home';
   const archived = existing?.status === 'archived';
   const seg = (value, label) => `<button type="button" class="seg ${d.type === value ? 'on' : ''}" data-action="type" data-value="${value}">${label}</button>`;
 
@@ -555,7 +557,7 @@ export function cardEditView(params, rest, name) {
         await store.archiveCard(id);
         draft = null;
         toast('Card archived.', { label: 'Undo', run: () => store.restoreCard(id) });
-        go(back === '#/review' ? '#/review' : '#/cards');
+        go(back === '#/review' || back.startsWith('#/sessions') ? back : '#/cards');
       },
       async restore() {
         await store.restoreCard(id);

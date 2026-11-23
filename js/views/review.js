@@ -1,9 +1,12 @@
 import { store } from '../store.js';
 import { buildQueue, Session, previewRatings, promptIndex, isActive, Rating, State, parseKey, schedKey, keysOf } from '../scheduler.js';
 import { checkAnswer, checkMeaning, splitMeanings, isRight } from '../match.js';
-import { formatInterval, formatDuration, formatRelative } from '../util.js';
+import { formatInterval, formatRelative } from '../util.js';
 import { esc, multiline, go, render, toast } from '../ui.js';
 import { todayPanel } from './home.js';
+import { newSessionId, summariseSession } from '../sessions.js';
+import { summaryHtml } from './sessions.js';
+import { startPractice } from './practice.js';
 
 const MAX_MS = 5 * 60 * 1000; // ignore time beyond 5 minutes on one card (you probably walked away)
 let rv = null;
@@ -14,7 +17,7 @@ function start(themeIds) {
   // Reviewing a theme includes its sub-themes.
   if (themeIds) themeIds = [...new Set(themeIds.flatMap(id => store.themeScope(id)))];
   const q = buildQueue({ cards: store.liveCards(), states: store.states, settings: store.settings, themeIds, dirOf: store.dirOf });
-  rv = { session: new Session(q.ids, { later: q.later }), themeIds, current: null, ms: 0, started: q.ids.length + q.later.length > 0 };
+  rv = { session: new Session(q.ids, { later: q.later }), sessionId: newSessionId(store.device.id), themeIds, current: null, ms: 0, started: q.ids.length + q.later.length > 0 };
   advance();
 }
 
@@ -52,12 +55,12 @@ function advance(force = false) {
 
 // ---------- Words ----------
 
-const language = card => store.themeLanguage(card.theme) || 'Word';
-const dirLabel = (card, dir) => (dir === 'rev' ? `English → ${language(card)}` : `${language(card)} → English`);
-const wordPrompt = (card, dir) => (dir === 'rev' ? card.answer : card.prompts[0]);
+export const language = card => store.themeLanguage(card.theme) || 'Word';
+export const dirLabel = (card, dir) => (dir === 'rev' ? `English → ${language(card)}` : `${language(card)} → English`);
+export const wordPrompt = (card, dir) => (dir === 'rev' ? card.answer : card.prompts[0]);
 
 // Marks a typed answer to a word card in either direction.
-function markWord(card, dir, typed, showOnly) {
+export function markWord(card, dir, typed, showOnly) {
   const strictAccents = store.settings.strictAccents;
   if (showOnly) return { result: 'blank', expected: '' };
   if (dir === 'fwd') return checkMeaning(typed, [...splitMeanings(card.answer), ...card.accept], { strictAccents });
@@ -71,9 +74,9 @@ function markWord(card, dir, typed, showOnly) {
   return r;
 }
 
-const wordRight = (res, overridden) => overridden || isRight(res.result) || res.result === 'synonym';
+export const wordRight = (res, overridden) => overridden || isRight(res.result) || res.result === 'synonym';
 
-function verdictHtml(res, overridden, card, dir) {
+export function verdictHtml(res, overridden, card, dir) {
   if (overridden) return `<div class="verdict ok">Marked as right</div>`;
   if (res.result === 'correct') return `<div class="verdict ok">✓ Correct</div>`;
   if (res.result === 'accent') return `<div class="verdict ok">✓ Accepted. Correct spelling: <strong>${esc(res.expected)}</strong></div>`;
@@ -85,7 +88,7 @@ function verdictHtml(res, overridden, card, dir) {
 }
 
 // The full word, its meaning and its note, shown after answering in either direction.
-function wordAnswerHtml(card, typed) {
+export function wordAnswerHtml(card, typed) {
   return `
     <div class="compare">
       ${typed ? `<div class="compare-box"><div class="label">Your answer</div><div>${esc(typed)}</div></div>` : ''}
@@ -99,10 +102,10 @@ function wordAnswerHtml(card, typed) {
     ${card.note ? `<div class="word-note">${multiline(card.note)}</div>` : ''}`;
 }
 
-const wordPlaceholder = (card, dir) => (dir === 'rev' ? `Type the ${language(card)}` : 'Type the English');
+export const wordPlaceholder = (card, dir) => (dir === 'rev' ? `Type the ${language(card)}` : 'Type the English');
 
 // placeholder: a one-line answer (auto-marked); none: a free answer you mark yourself.
-function askForm({ placeholder = null, submit = 'check', skip = 'showOnly' }) {
+export function askForm({ placeholder = null, submit = 'check', skip = 'showOnly' }) {
   return `
     <form class="answer-form" data-submit="${submit}" autocomplete="off">
       ${placeholder
@@ -287,25 +290,35 @@ function pendingHtml() {
 function finishedScreen() {
   const later = rv.session.nextLaterDue();
   const reviewed = rv.session.done;
-  let html;
+  const sum = reviewed ? thisSession() : null;
+  const n = rv.session.later.length;
+  let head, buttons;
   if (later) {
-    html = `
-      <h2>Nothing else due right now</h2>
-      <p>${rv.session.later.length} card${rv.session.later.length === 1 ? '' : 's'} you're still learning come${rv.session.later.length === 1 ? 's' : ''} back ${formatRelative(later)}.</p>
-      <div class="row"><button type="button" class="btn" data-action="showNow">Show now</button><a class="btn btn-secondary" href="#/home">Finish</a></div>`;
+    head = `<h2>Nothing else due right now</h2>
+      <p>${n} card${n === 1 ? '' : 's'} you're still learning come${n === 1 ? 's' : ''} back ${formatRelative(later)}.</p>`;
+    buttons = `<div class="row"><button type="button" class="btn" data-action="showNow">Show now</button><a class="btn btn-secondary" href="#/home">Finish</a></div>`;
   } else if (!rv.started) {
-    html = `<h2>Nothing due</h2><p>There are no cards to review here right now.</p><a class="btn" href="#/home">Back</a>`;
+    head = `<h2>Nothing due</h2><p>There are no cards to review here right now.</p>`;
+    buttons = `<a class="btn" href="#/home">Back</a>`;
   } else {
-    html = `<h2>Session complete</h2><a class="btn" href="#/home">Done</a>`;
+    head = `<h2>Session complete</h2>`;
+    // Lighter when "Practise these again" is the main button above it.
+    buttons = `<a class="btn ${sum?.wrong.length ? 'btn-secondary' : ''}" href="#/home">Done</a>`;
   }
   return `
     <header class="bar"><a class="bar-back" href="#/home" aria-label="Home">✕</a><h1>Review</h1><span class="bar-spacer"></span></header>
     <main class="page center">
-      ${reviewed ? `<p class="big-number">${reviewed}</p><p class="muted">card${reviewed === 1 ? '' : 's'} reviewed · ${formatDuration(rv.ms)}</p>` : ''}
-      ${html}
+      ${head}
+      ${sum ? summaryHtml(sum, { from: 'from=review', practice: true }) : ''}
+      ${buttons}
       ${pendingHtml()}
       ${todayPanel()}
     </main>`;
+}
+
+// This session's summary, from the reviews saved so far.
+function thisSession() {
+  return summariseSession([...store.reviews.values()].filter(r => r.session === rv.sessionId));
 }
 
 function focusAnswer() {
@@ -317,7 +330,7 @@ function rate(rating) {
   const cur = rv.current;
   const ms = Math.min(Date.now() - cur.shownAt, MAX_MS);
   // addReview updates memory straight away; saving to storage finishes in the background.
-  store.addReview({ card: cur.id, rating, ms, prompt: cur.prompt, dir: cur.dir }).catch(e => toast(`Couldn't save: ${e.message}`));
+  store.addReview({ card: cur.id, rating, ms, prompt: cur.prompt, dir: cur.dir, session: rv.sessionId }).catch(e => toast(`Couldn't save: ${e.message}`));
   rv.ms += ms;
   rv.session.answered(cur.key, store.cardState(cur.key).state);
   advance();
@@ -407,6 +420,9 @@ export function reviewView(params) {
             render();
           },
         });
+      },
+      practiseWrong() {
+        startPractice(thisSession().wrong.map(w => ({ key: w.key })), { back: '#/review', title: 'Practice' });
       },
       showNow() {
         advance(true);
@@ -565,7 +581,7 @@ export function reviewView(params) {
     const other = fu.items[fu.i].card;
     const right = wordRight(fu.result, fu.overridden);
     const ms = Math.min(Date.now() - fu.shownAt, MAX_MS);
-    store.addReview({ card: other.id, rating: right ? Rating.Good : Rating.Again, ms, prompt: 0, kind: 'followup', dir: cur.dir })
+    store.addReview({ card: other.id, rating: right ? Rating.Good : Rating.Again, ms, prompt: 0, kind: 'followup', dir: cur.dir, session: rv.sessionId })
       .catch(e => toast(`Couldn't save: ${e.message}`));
     if (!right) rv.session.relearn(schedKey(other.id, cur.dir), store.cardState(schedKey(other.id, cur.dir)).state);
     if (fu.i < fu.items.length - 1) {

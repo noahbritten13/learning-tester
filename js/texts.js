@@ -1,6 +1,6 @@
 // Longer fixed texts.
 
-export const DATA_README = `<!-- learning-tester:data-readme v3 -->
+export const DATA_README = `<!-- learning-tester:data-readme v4 -->
 # Learning Tester data
 
 This private repository holds the data for Learning Tester, a personal
@@ -64,13 +64,14 @@ them yourself, or give them to any AI or tool. Everything is plain text.
 ## A review (one line in a .jsonl file)
 
 \`\`\`json
-{"id":"iphone-ab12-...","card":"c_9h2m1","ts":"2026-10-09T10:05:00.000Z","rating":3,"kind":"review","ms":8400,"prompt":0,"device":"iphone-ab12"}
+{"id":"iphone-ab12-...","card":"c_9h2m1","ts":"2026-10-09T10:05:00.000Z","rating":3,"kind":"review","ms":8400,"prompt":0,"session":"iphone-ab12-s-k3f9","device":"iphone-ab12"}
 \`\`\`
 
 - \`rating\`: 1 = Again, 2 = Hard, 3 = Good, 4 = Easy.
 - \`kind\`: \`review\`, or \`followup\` for a related-word check (only a wrong follow-up affects the schedule).
 - \`ms\`: time taken. \`prompt\`: which wording was shown.
 - \`dir\`: \`"rev"\` when a word was asked meaning → word. Missing means word → meaning (or a normal card).
+- \`session\`: the review session it was part of. All reviews from one sitting share it. Reviews from before November 2026 have none.
 
 ## Schedules
 

@@ -516,3 +516,24 @@ fieldset.also-in .check-row { margin-top: 6px; }
 .chip-p-done { background: var(--prog-done-bg); color: var(--prog-done); }
 .chip-p-wait { background: var(--prog-wait-bg); color: var(--prog-wait-ink); }
 .chip-p-new { background: var(--prog-new-bg); color: var(--prog-new-ink); }
+
+/* Session records (spec 02) */
+.session-summary { margin: 8px 0 20px; }
+.session-summary .big-number { margin-top: 8px; }
+.first-time { font-size: 1.05rem; margin: 12px 0 4px; }
+.session-summary h2, .session-summary h3 { text-align: left; margin: 20px 0 8px; }
+.session-summary h3 { font-size: 0.95rem; color: var(--muted); }
+.wrong-list { text-align: left; }
+.wrong-item a { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; color: inherit; text-decoration: none; }
+.wrong-item.muted { padding: 10px 14px; }
+.wrong-q { font-weight: 600; }
+.wrong-a { color: var(--muted); }
+.session-summary .btn-block { margin-top: 12px; }
+.practice-note { font-size: 0.8rem; color: var(--prog-wait-ink); background: var(--prog-wait-bg); border-radius: 999px; padding: 3px 10px; display: inline-block; margin: 0 0 10px; }
+.practise-mistakes { margin-bottom: 20px; }
+.practise-mistakes .row { gap: 8px; }
+.day-head { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 18px 0 6px; }
+.session-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; color: inherit; text-decoration: none; }
+.session-row .grow { display: flex; flex-direction: column; min-width: 0; }
+.session-title { font-weight: 600; }
+.chev { color: var(--muted); font-size: 1.3rem; }

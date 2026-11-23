@@ -7,6 +7,8 @@ import { reviewView } from './views/review.js';
 import { cardsView, cardEditView, archiveView } from './views/cards.js';
 import { importView } from './views/import.js';
 import { settingsView, setupView, coachView } from './views/settings.js';
+import { sessionsView } from './views/sessions.js';
+import { practiceView } from './views/practice.js';
 
 const routes = {
   home: homeView,
@@ -19,6 +21,8 @@ const routes = {
   settings: settingsView,
   setup: setupView,
   coach: coachView,
+  sessions: sessionsView,
+  practice: practiceView,
 };
 
 const root = document.getElementById('app');
