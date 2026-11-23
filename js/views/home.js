@@ -1,5 +1,5 @@
 import { store } from '../store.js';
-import { buildQueue, isActive, State, keysOf } from '../scheduler.js';
+import { buildQueue, progressCounts, isActive, State, keysOf } from '../scheduler.js';
 import { inThemes } from '../model.js';
 import { dayStart, formatDuration, formatRelative } from '../util.js';
 import { esc, go, syncPill } from '../ui.js';
@@ -7,6 +7,7 @@ import { esc, go, syncPill } from '../ui.js';
 let selecting = false;
 const selected = new Set();
 const expanded = new Set(); // themes whose sub-themes are shown
+const chipsOpen = new Set(); // rows whose progress numbers are shown
 
 export function todayStats() {
   const reviews = store.reviewsSince(dayStart());
@@ -36,6 +37,22 @@ export function todayPanel() {
   </section>`;
 }
 
+// Reviewed / waiting / not reviewed yet, as a thin stacked bar (always shown)
+// and as numbered chips (shown on tap or when a theme is expanded).
+const PROGRESS = [['reviewed', 'reviewed', 'done'], ['waiting', 'waiting', 'wait'], ['unseen', 'not reviewed yet', 'new']];
+const progressLabel = p => PROGRESS.map(([k, label]) => `${p[k]} ${label}`).join(', ');
+
+export function progressBar(p) {
+  const segs = PROGRESS.filter(([k]) => p[k] > 0)
+    .map(([k, , cls]) => `<span class="prog-seg prog-${cls}" style="flex-grow:${p[k]}"></span>`).join('');
+  return `<span class="prog-bar" role="img" aria-label="${progressLabel(p)}">${segs}</span>`;
+}
+
+function progressChips(p, id, sub) {
+  const chips = PROGRESS.map(([k, label, cls]) => `<span class="chip chip-p-${cls}">${p[k]} ${label}</span>`).join('');
+  return `<li class="prog-chips ${sub ? 'sub' : ''}" id="prog-${id}"><div class="chips">${chips}</div></li>`;
+}
+
 function nextDueText() {
   let soonest = null;
   for (const c of store.liveCards()) {
@@ -56,6 +73,7 @@ export function homeView() {
   const all = store.liveCards();
   const active = all.filter(isActive);
   const queueFor = themeIds => buildQueue({ cards: all, states: store.states, settings: store.settings, themeIds, dirOf: store.dirOf }).counts;
+  const progressFor = themeIds => progressCounts({ cards: all, states: store.states, themeIds, dirOf: store.dirOf });
   const total = queueFor(null);
   const dueNow = total.learning + total.review;
   const anyDue = dueNow + total.new > 0;
@@ -63,6 +81,7 @@ export function homeView() {
   // One row: a theme (covering its sub-themes) or a single sub-theme.
   const row = (theme, scope, { sub = false, kids = 0 } = {}) => {
     const q = queueFor(scope);
+    const p = progressFor(scope);
     const due = q.learning + q.review;
     const count = active.filter(c => inThemes(c, scope)).length;
     const meta = [due ? `${due} due` : '', q.new ? `${q.new} new` : ''].filter(Boolean).join(' · ') || (count ? 'Nothing due' : 'No cards yet');
@@ -72,11 +91,17 @@ export function homeView() {
     const toggle = kids
       ? `<button type="button" class="expander ${expanded.has(theme.id) ? 'open' : ''}" data-action="expand" data-id="${theme.id}" aria-label="${expanded.has(theme.id) ? 'Hide' : 'Show'} sub-themes of ${esc(theme.name)}" aria-expanded="${expanded.has(theme.id)}">›</button>`
       : sub ? '' : '<span class="expander-space"></span>';
+    const open = chipsOpen.has(theme.id);
+    const metaLine = `${count} card${count === 1 ? '' : 's'}${kids ? ` · ${kids} sub-theme${kids === 1 ? '' : 's'}` : ''} · ${meta}`;
+    const body = p.total
+      ? `<button type="button" class="grow row-body" data-action="chips" data-id="${theme.id}" aria-expanded="${open}" aria-controls="prog-${theme.id}">
+          <span class="theme-name">${esc(theme.name)}</span><span class="muted small">${metaLine}</span>${progressBar(p)}</button>`
+      : `<div class="grow"><div class="theme-name">${esc(theme.name)}</div><div class="muted small">${metaLine}</div></div>`;
     return `<li class="theme-row ${sub ? 'sub' : ''}">
       ${toggle}
-      <div class="grow"><div class="theme-name">${esc(theme.name)}</div><div class="muted small">${count} card${count === 1 ? '' : 's'}${kids ? ` · ${kids} sub-theme${kids === 1 ? '' : 's'}` : ''} · ${meta}</div></div>
+      ${body}
       ${control}
-    </li>`;
+    </li>${p.total && open ? progressChips(p, theme.id, sub) : ''}`;
   };
 
   // Which way language words are asked, chosen per language theme.
@@ -134,7 +159,14 @@ export function homeView() {
       },
       expand(el) {
         const id = el.dataset.id;
-        expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+        // The progress numbers open and close with the sub-themes.
+        if (expanded.has(id)) { expanded.delete(id); chipsOpen.delete(id); }
+        else { expanded.add(id); chipsOpen.add(id); }
+        go('#/home');
+      },
+      chips(el) {
+        const id = el.dataset.id;
+        chipsOpen.has(id) ? chipsOpen.delete(id) : chipsOpen.add(id);
         go('#/home');
       },
       toggleSelect() {

@@ -172,6 +172,36 @@ export function buildQueue({ cards, states, settings, themeIds = null, now = new
   };
 }
 
+// The true state of every active card in scope, for the progress bar on
+// Home. Unlike buildQueue, no daily limits apply. Each card counts once
+// (word cards are not counted per direction):
+//   waiting:  a schedule it uses is due now (learning ones up to LEARN_AHEAD_MS early)
+//   unseen:   every schedule it uses is still New (or has no state at all)
+//   reviewed: everything else
+export function progressCounts({ cards, states, themeIds = null, now = new Date(), dirOf = () => 'mixed' }) {
+  const out = { reviewed: 0, waiting: 0, unseen: 0, total: 0 };
+  for (const c of cards) {
+    if (!isActive(c) || (themeIds && !inThemes(c, themeIds))) continue;
+    let keys = keysOf(c);
+    if (c.type === 'word') {
+      const mode = dirOf(c);
+      if (mode === 'fwd') keys = [keys[0]];
+      else if (mode === 'rev') keys = [keys[1]];
+    }
+    const sts = keys.map(k => states.get(k)?.state);
+    const isDue = st => {
+      if (!st || st.state === State.New) return false;
+      const due = new Date(st.due);
+      return st.state === State.Review ? due <= now : due - now <= LEARN_AHEAD_MS;
+    };
+    out.total++;
+    if (sts.some(isDue)) out.waiting++;
+    else if (sts.every(st => !st || st.state === State.New)) out.unseen++;
+    else out.reviewed++;
+  }
+  return out;
+}
+
 // Due counts for the home screen: what "Review all" would show, and what
 // reviewing each theme on its own would show (daily limits still apply).
 export function dueByTheme({ cards, states, settings, now = new Date(), dirOf }) {

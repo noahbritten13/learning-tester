@@ -19,6 +19,15 @@
   --bad-bg: #fbe3df;
   --bad-ink: #8f2f20;
   --ok-ink: #2f7d4f;
+  /* Progress bar on Home: reviewed / waiting / not reviewed yet */
+  --prog-done: #2e5e4e;
+  --prog-done-bg: #e3ece8;
+  --prog-wait: #d69a1f;
+  --prog-wait-ink: #7a5200;
+  --prog-wait-bg: #fdf1d8;
+  --prog-new: #bdb9ae;
+  --prog-new-ink: #55565b;
+  --prog-new-bg: #eceae4;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 2px 8px rgb(0 0 0 / 0.04);
   --radius: 14px;
   --tabs-h: 58px;
@@ -47,6 +56,14 @@
     --bad-bg: #3d2420;
     --bad-ink: #f4a99b;
     --ok-ink: #6fcf97;
+    --prog-done: #93c2b0;
+    --prog-done-bg: #1f3530;
+    --prog-wait: #e2b45a;
+    --prog-wait-ink: #f3d28a;
+    --prog-wait-bg: #3a2f17;
+    --prog-new: #55595f;
+    --prog-new-ink: #c9cbcf;
+    --prog-new-bg: #2e3135;
     --shadow: none;
   }
 }
@@ -480,3 +497,22 @@ fieldset.also-in .check-row { margin-top: 6px; }
 .existing { background: var(--accent-soft); color: var(--text); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-size: 0.9rem; }
 .existing-diff { margin: 6px 0; display: grid; gap: 2px; }
 .existing .check-row { margin-top: 4px; }
+
+/* Progress bar and number chips on Home theme rows (spec 01) */
+.row-body {
+  display: flex; flex-direction: column; align-items: stretch; min-width: 0;
+  background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit;
+  text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.row-body:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.prog-bar { display: flex; gap: 2px; height: 6px; margin-top: 6px; }
+.prog-seg { flex: 0 1 0; min-width: 3px; border-radius: 999px; }
+.prog-done { background: var(--prog-done); }
+.prog-wait { background: var(--prog-wait); }
+.prog-new { background: var(--prog-new); }
+.prog-chips { padding: 0 14px 12px 46px; }
+.list > li.prog-chips { border-top: 0; }
+.prog-chips.sub { padding-left: 46px; background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.chip-p-done { background: var(--prog-done-bg); color: var(--prog-done); }
+.chip-p-wait { background: var(--prog-wait-bg); color: var(--prog-wait-ink); }
+.chip-p-new { background: var(--prog-new-bg); color: var(--prog-new-ink); }

@@ -6,7 +6,7 @@ import { cardHints, cardErrors } from '../js/rules.js';
 import { parseImport, matchExisting, wordKey } from '../js/importer.js';
 import {
   makeScheduler, replayCard, computeStates, buildQueue, Session, promptIndex, previewRatings, Rating, State, DEFAULT_SETTINGS,
-  schedKey, parseKey, reviewKey, keysOf,
+  schedKey, parseKey, reviewKey, keysOf, progressCounts,
 } from '../js/scheduler.js';
 import { newCard, cleanCard, mergeInto, toFiles, fromFiles, isManagedPath, entryToMarkdown, markdownToEntry, tombstone, themeTree, themeAndChildren, themeLabel, themePaths, inThemes, themeLanguage } from '../js/model.js';
 import { runSync, diffFiles, GitHubClient } from '../js/sync.js';
@@ -681,6 +681,64 @@ describe('Cards in several sub-themes', () => {
     d.cards.set('c1', card('c1', { theme: 'verbs', also_in: ['irr'] }));
     const files = toFiles(d);
     ok(files.has('cards/spanish/verbs.json') && !files.has('cards/spanish/irregular.json'), [...files.keys()].join(', '));
+  });
+});
+
+describe('Progress bar counts (spec 01)', () => {
+  const f = makeScheduler(DEFAULT_SETTINGS);
+  const graduated = id => [rev(id, 0, 3), rev(id, 10, 3)]; // Good twice: now in Review, due in a few days
+  const counts = (cards, byKey, now, extra = {}) =>
+    progressCounts({ cards, states: computeStates(cards.filter(c => !c.deleted), byKey, f, now), now, ...extra });
+  test('new → not reviewed yet; reviewed and not due → reviewed; due → waiting', () => {
+    const cards = [card('n'), card('r')];
+    const byKey = new Map([['r', graduated('r')]]);
+    eq(counts(cards, byKey, new Date(at(15))), { reviewed: 1, waiting: 0, unseen: 1, total: 2 });
+    const st = computeStates(cards, byKey, f, new Date(at(15))).get('r').state;
+    eq(counts(cards, byKey, new Date(new Date(st.due).getTime() + 1000)), { reviewed: 0, waiting: 1, unseen: 1, total: 2 });
+  });
+  test('a card in learning that comes back within a few minutes counts as waiting', () => {
+    const cards = [card('c1')];
+    eq(counts(cards, new Map([['c1', [rev('c1', 0, Rating.Again)]]]), new Date(at(0.5))).waiting, 1);
+  });
+  test('archived and deleted cards are not counted', () => {
+    const cards = [card('a'), card('arch', { status: 'archived' }), { id: 'gone', deleted: true, updated: T0.toISOString() }];
+    eq(counts(cards, new Map(), new Date(at(15))), { reviewed: 0, waiting: 0, unseen: 1, total: 1 });
+  });
+  test('a card in several sub-themes counts in each, and once in the parent', () => {
+    const cards = [card('c1', { theme: 'verbs', also_in: ['irr'] }), card('c2', { theme: 'irr' })];
+    const now = new Date(at(15));
+    eq(counts(cards, new Map(), now, { themeIds: ['verbs'] }).total, 1);
+    eq(counts(cards, new Map(), now, { themeIds: ['irr'] }).total, 2);
+    eq(counts(cards, new Map(), now, { themeIds: ['es', 'verbs', 'irr'] }).total, 2);
+  });
+  test('the three numbers add up to the total', () => {
+    const cards = [card('a'), card('b'), card('c'), card('d'), card('e', { status: 'archived' })];
+    const byKey = new Map([['a', graduated('a')], ['b', graduated('b')], ['c', [rev('c', 0, Rating.Again)]]]);
+    const p = counts(cards, byKey, new Date(at(5)));
+    eq(p.reviewed + p.waiting + p.unseen, p.total);
+    eq(p, { reviewed: 2, waiting: 1, unseen: 1, total: 4 });
+  });
+  test('daily limits do not change the counts', () => {
+    const cards = Array.from({ length: 5 }, (_, i) => card('n' + i));
+    const states = computeStates(cards, new Map(), f, new Date(at(15)));
+    eq(buildQueue({ cards, states, settings: { ...DEFAULT_SETTINGS, newPerDay: 1 }, now: new Date(at(15)) }).counts.new, 1);
+    eq(progressCounts({ cards, states, now: new Date(at(15)) }).unseen, 5);
+  });
+  test('word cards: counted once, using the directions the theme asks', () => {
+    const w = [card('w0', { type: 'word', prompts: ['tener'], answer: 'to have' })];
+    const r = schedKey('w0', 'rev');
+    const now = new Date(at(15));
+    // Word → meaning learnt and not due; meaning → word still new.
+    const fwdOnly = new Map([['w0', graduated('w0')]]);
+    eq(counts(w, fwdOnly, now, { dirOf: () => 'mixed' }), { reviewed: 1, waiting: 0, unseen: 0, total: 1 });
+    eq(counts(w, fwdOnly, now, { dirOf: () => 'fwd' }).reviewed, 1);
+    eq(counts(w, fwdOnly, now, { dirOf: () => 'rev' }).unseen, 1);
+    // Meaning → word learnt and now due; word → meaning still new.
+    const revDue = new Map([[r, graduated('w0').map(x => ({ ...x, dir: 'rev' }))]]);
+    const due = new Date(new Date(computeStates(w, revDue, f, now).get(r).state.due).getTime() + 1000);
+    eq(counts(w, revDue, due, { dirOf: () => 'mixed' }).waiting, 1);
+    eq(counts(w, revDue, due, { dirOf: () => 'fwd' }).unseen, 1, 'fwd mode only looks at word → meaning');
+    eq(counts(w, revDue, due, { dirOf: () => 'rev' }).waiting, 1);
   });
 });
 
