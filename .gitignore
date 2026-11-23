@@ -7,3 +7,5 @@ Access key*
 *.key
 *secret*
 *.webloc
+# Private Claude Code notes for this Mac only.
+CLAUDE.local.md
